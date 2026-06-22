@@ -22,7 +22,6 @@ st.divider()
 # SECCIÓN 1: Analítica Visual y Tráfico Semanal
 st.subheader("📈 Tráfico Semanal e Impacto Financiero")
 
-# Datos simulados para tráfico de los últimos 7 días
 fechas = [(datetime.today() - timedelta(days=i)).strftime('%d/%m') for i in range(6, -1, -1)]
 datos_trafico = pd.DataFrame({
     "Día": fechas * 2,
@@ -39,7 +38,6 @@ datos_graficos = pd.DataFrame({
 colA, colB = st.columns(2)
 
 with colA:
-    # Gráfico de líneas para tráfico semanal
     fig_line = px.line(
         datos_trafico, 
         x="Día", 
@@ -52,7 +50,6 @@ with colA:
     st.plotly_chart(fig_line, use_container_width=True)
 
 with colB:
-    # Gráfico circular interactivo (Solo Fugas)
     fugas_df = datos_graficos[datos_graficos["Estado del Gasto"] == "Fuga (Término Basura)"]
     fig_pie = px.pie(
         fugas_df, 
@@ -65,57 +62,90 @@ with colB:
 
 st.divider()
 
-# SECCIÓN 2: Log de Decisiones Propuestas (Concretas)
-st.subheader("🤖 Acciones Propuestas (Requieren Aprobación)")
-st.markdown("Detalle exacto de la modificación que se enviará a la API de Google Ads.")
+# NUEVA SECCIÓN: Intencionalidad y Top Búsquedas
+st.subheader("🔍 Análisis Estratégico: Intención y Top 5 Búsquedas")
+col_intent, col_top = st.columns([1, 1.2])
 
-datos_propuestas = {
-    "Fecha Detección": ["22/06/2026", "22/06/2026", "22/06/2026", "22/06/2026"],
-    "Campaña": ["LOCAL", "Venta Flota", "LOCAL", "BRAND"],
-    "ACCIÓN EXACTA": [
-        "Añadir a Negativas (Frase): \"segunda mano\"", 
-        "Añadir a Negativas (Frase): \"alquiler\"", 
-        "Alerta: Revisar ROAS de anuncio",
-        "Añadir a Negativas (Exacta): \"willy fog dibujos\""
-    ],
-    "Elemento Original": ["alquiler camper segunda mano", "alquiler furgoneta barata", "Modelo Santorini", "willy fog dibujos"],
-    "Motivo Analítico": [
-        "Intención de compra en campaña de alquiler.", 
-        "Intención de alquiler en campaña de venta.", 
-        "0 reservas confirmadas (evaluado sobre base 100km/noche) tras 75€ gastados.",
-        "Tráfico irrelevante consumiendo presupuesto de marca."
-    ],
-    "Estado": ["Pendiente", "Pendiente", "Requiere Revisión", "Pendiente"]
-}
+with col_intent:
+    # Gráfico de anillo para la intención de búsqueda
+    datos_intencion = pd.DataFrame({
+        "Intención": ["Transaccional (Alta Intención)", "Informativa / Curiosidad", "Fuga (P2P/Barato)", "Navegacional (Marca)"],
+        "Volumen": [45, 25, 20, 10]
+    })
+    fig_intent = px.pie(
+        datos_intencion, 
+        values="Volumen", 
+        names="Intención", 
+        title="Distribución de Intencionalidad del Tráfico",
+        hole=0.5,
+        color="Intención",
+        color_discrete_map={
+            "Transaccional (Alta Intención)": "#2e7b32", 
+            "Navegacional (Marca)": "#1565c0", 
+            "Informativa / Curiosidad": "#ffb300", 
+            "Fuga (P2P/Barato)": "#d32f2f"
+        }
+    )
+    st.plotly_chart(fig_intent, use_container_width=True)
 
-df_propuestas = pd.DataFrame(datos_propuestas)
-st.dataframe(df_propuestas, use_container_width=True)
-
-colX, colY = st.columns(2)
-with colX:
-    if st.button("Aprobar modificaciones técnicas de hoy"):
-        st.success("Acciones enviadas a la API de Google Ads.")
+with col_top:
+    st.markdown("**🏆 Top 5 Términos de Búsqueda (Últimos 7 días)**")
+    datos_top = pd.DataFrame({
+        "Término de Búsqueda": [
+            "alquiler camper valencia", 
+            "comprar camper santorini", 
+            "wheely fog", 
+            "alquiler furgoneta camper particulares", 
+            "rutas camper comunidad valenciana"
+        ],
+        "Intención Asignada": ["Transaccional", "Transaccional", "Marca", "Fuga", "Informativa"],
+        "Impresiones": [340, 185, 120, 95, 80],
+        "Clics": [45, 22, 38, 15, 5]
+    })
+    
+    # Calculamos el CTR automáticamente para la tabla
+    datos_top["CTR (%)"] = ((datos_top["Clics"] / datos_top["Impresiones"]) * 100).round(1).astype(str) + "%"
+    
+    st.dataframe(datos_top, use_container_width=True)
 
 st.divider()
 
-# SECCIÓN 3: Histórico de Modificaciones Realizadas
-st.subheader("✅ Historial de Cambios Ejecutados (Últimos 7 días)")
-st.markdown("Registro de acciones ya implementadas en la cuenta y su justificación estratégica.")
+# SECCIÓN 3: Log de Decisiones Propuestas
+st.subheader("🤖 Acciones Propuestas (Requieren Aprobación)")
+datos_propuestas = {
+    "Campaña": ["LOCAL", "Venta Flota", "LOCAL"],
+    "ACCIÓN EXACTA": [
+        "Añadir a Negativas (Frase): \"particulares\"", 
+        "Añadir a Negativas (Frase): \"alquiler\"", 
+        "Alerta: Revisar ROAS de anuncio"
+    ],
+    "Elemento Original": ["alquiler furgoneta camper particulares", "alquiler furgoneta barata", "Modelo Santorini"],
+    "Motivo Analítico": [
+        "Intención P2P en campaña profesional.", 
+        "Intención de alquiler en campaña de venta.", 
+        "0 reservas (evaluado sobre base 100km/noche) tras 75€ gastados."
+    ],
+    "Estado": ["Pendiente", "Pendiente", "Requiere Revisión"]
+}
+st.dataframe(pd.DataFrame(datos_propuestas), use_container_width=True)
 
+if st.button("Aprobar modificaciones técnicas de hoy"):
+    st.success("Acciones enviadas a la API de Google Ads.")
+
+st.divider()
+
+# SECCIÓN 4: Histórico
+st.subheader("✅ Historial de Cambios Ejecutados (Últimos 7 días)")
 datos_historial = {
-    "Fecha Ejecución": ["18/06/2026", "19/06/2026", "20/06/2026"],
-    "Campaña Afectada": ["LOCAL", "LOCAL", "LOCAL"],
+    "Fecha Ejecución": ["18/06/2026", "20/06/2026"],
+    "Campaña Afectada": ["LOCAL", "LOCAL"],
     "Modificación Realizada": [
         "Eliminación de Negativa: [furgoneta camper valencia]", 
-        "Añadir a Negativas (Frase): \"particulares\"", 
         "Ajuste de Puja: Límite de CPA"
     ],
     "Motivo Estratégico": [
-        "Estaba bloqueando demanda core en zona de influencia (Rafelbunyol).", 
-        "Fuga recurrente detectada. Intención P2P incompatible con flota profesional.", 
-        "Prevención de volatilidad. Crecimiento del cap limitado al +20% diario."
+        "Bloqueaba demanda en zona de influencia (Rafelbunyol).", 
+        "Prevención de volatilidad. Crecimiento del cap limitado al +20%."
     ]
 }
-
-df_historial = pd.DataFrame(datos_historial)
-st.dataframe(df_historial, use_container_width=True)
+st.dataframe(pd.DataFrame(datos_historial), use_container_width=True)
