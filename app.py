@@ -4,12 +4,13 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import random
 
 # ==========================================
 # 1. CONFIGURACIÓN CORE Y ESTILOS
 # ==========================================
 st.set_page_config(
-    page_title="Wheely Fog | Google AI Agent", 
+    page_title="Wheely Fog | AI Command Center", 
     page_icon="🧠", 
     layout="wide", 
     initial_sidebar_state="expanded"
@@ -22,17 +23,15 @@ st.markdown("""
     .metric-value { color: #202124; font-size: 1.8rem; font-weight: 700; margin: 5px 0; }
     .seo-card { border-left: 5px solid #34a853; }
     .sem-card { border-left: 5px solid #ea4335; }
-    .badge-verde { background-color: #e6f4ea; color: #1e8e3e; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: bold;}
-    .badge-rojo { background-color: #fce8e6; color: #d93025; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: bold;}
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. MOTORES DE DATOS (SEM & SEO)
+# 2. MOTORES DE DATOS Y HERRAMIENTAS API
 # ==========================================
 @st.cache_data
 def load_sem_data():
-    """Genera dataset avanzado para SEM."""
+    """Genera dataset del histórico de campañas SEM."""
     np.random.seed(42)
     fechas = [datetime.today() - timedelta(days=i) for i in range(30)]
     terminos = ["alquiler camper valencia", "alquiler furgoneta camper", "comprar camper segunda mano", "camperizacion valencia", "wheely fog", "camper santorini alquiler"]
@@ -57,7 +56,7 @@ def load_sem_data():
 
 @st.cache_data
 def load_seo_historical_blogs():
-    """Simula la ingesta de los 50 blogs históricos de mayor rendimiento."""
+    """Memoria de las 50 URLs con mayor tasa de conversión."""
     blogs = [
         {"URL": "/rutas/costa-blanca-camper", "Tráfico (All Time)": 14500, "Palabra Clave Principal": "ruta costa blanca camper", "Posición Media": 2.4, "Tasa Conversión a Reserva": "1.2%"},
         {"URL": "/guias/normativa-pernocta-comunidad-valenciana", "Tráfico (All Time)": 12200, "Palabra Clave Principal": "pernocta comunidad valenciana", "Posición Media": 1.8, "Tasa Conversión a Reserva": "0.5%"},
@@ -69,7 +68,7 @@ def load_seo_historical_blogs():
 
 @st.cache_data
 def load_daily_content_proposals():
-    """Generador autónomo de artículos diarios basados en cruce de datos SEO."""
+    """Generador autónomo de 5 artículos diarios."""
     propuestas = [
         {
             "Título Propuesto": "Ruta de los Festivales 2026: Cómo preparar tu Camper para la temporada musical",
@@ -114,40 +113,104 @@ def load_daily_content_proposals():
     ]
     return pd.DataFrame(propuestas)
 
+# Herramientas de extracción en tiempo real (Simuladas para el análisis interactivo)
+def tool_get_search_volume():
+    searches = random.randint(1200, 1500)
+    return {"busquedas": searches, "tendencia": "+12%"}
+
+def tool_get_campaign_performance():
+    return {"roas": 3.8, "cpa": 12.50}
+
 df_sem = load_sem_data()
 df_hist_seo = load_seo_historical_blogs()
 df_proposals = load_daily_content_proposals()
 
 # ==========================================
-# 3. NAVEGACIÓN LATERAL (HEMISFERIOS DEL AGENTE)
+# 3. NAVEGACIÓN LATERAL
 # ==========================================
 with st.sidebar:
     st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Google_%22G%22_logo.svg/1200px-Google_%22G%22_logo.svg.png", width=40)
-    st.title("Wheely Fog AI")
-    st.markdown("Selecciona el hemisferio estratégico que deseas operar.")
+    st.title("Centro de Mando AI")
+    st.markdown("Control absoluto de tráfico orgánico y de pago.")
     
     hemisferio = st.radio(
         "Módulos Activos:",
         ("🛰️ SEM (Google Ads Performance)", "📝 SEO (Content Factory & Orgánico)"),
-        index=1  # Inicia en SEO de forma predeterminada
+        index=0 
     )
     
     st.divider()
     st.markdown("**Status de Integración:**")
     st.success("🟢 API Google Ads: Conectada")
     st.success("🟢 API Search Console: Conectada")
-    st.success("🟢 Memoria Vectorial: Activa")
+    st.success("🟢 Motor Lógico: Activo")
 
 # ==========================================
-# 4. HEMISFERIO 1: SEO & CONTENT ENGINE
+# 4. HEMISFERIO 1: SEM & PERFORMANCE ESTRATÉGICO
 # ==========================================
-if hemisferio == "📝 SEO (Content Factory & Orgánico)":
+if hemisferio == "🛰️ SEM (Google Ads Performance)":
+    st.title("🛰️ Director de Performance (SEM)")
+    
+    # --- BLOQUE INTERACTIVO RESTAURADO (Sin Chatbot) ---
+    st.markdown("### 🧠 Diagnóstico Estratégico en Vivo (IA)")
+    brand_data = tool_get_search_volume()
+    ads_data = tool_get_campaign_performance()
+    
+    st.info(f"""
+    **Análisis de Intersección Marca/Performance:**
+    Se han detectado **{brand_data['busquedas']} búsquedas directas** de Wheely Fog ({brand_data['tendencia']} vs mes anterior). 
+    Al cruzar este crecimiento orgánico de marca con nuestro ROAS actual en Ads ({ads_data['roas']}x) y el CPA de {ads_data['cpa']}€, la IA concluye que estamos en un punto de tracción óptimo.
+    
+    👉 **Recomendación ejecutiva:** Aumentar el presupuesto de las campañas de Marca/Retargeting un 10% para blindar la primera posición frente a competidores, ya que el coste de adquisición está muy por debajo del umbral de rentabilidad.
+    """)
+    st.divider()
+
+    # --- KPI GLOBALES ---
+    col_sem1, col_sem2, col_sem3 = st.columns(3)
+    coste_total = df_sem['Coste (€)'].sum()
+    valor_total = df_sem['Valor (€)'].sum()
+    roas = valor_total / coste_total if coste_total > 0 else 0
+    
+    with col_sem1:
+        st.markdown(f"""<div class="metric-card sem-card"><div class="metric-title">Inversión (Últimos 30d)</div><div class="metric-value">{coste_total:,.2f} €</div></div>""", unsafe_allow_html=True)
+    with col_sem2:
+        st.markdown(f"""<div class="metric-card sem-card"><div class="metric-title">Valor Retornado (Reservas)</div><div class="metric-value">{valor_total:,.2f} €</div></div>""", unsafe_allow_html=True)
+    with col_sem3:
+        st.markdown(f"""<div class="metric-card sem-card"><div class="metric-title">ROAS Consolidado</div><div class="metric-value">{roas:.2f}x</div></div>""", unsafe_allow_html=True)
+
+    # --- ALERTAS Y TABLA EDITABLE ---
+    st.subheader("Alertas de Destrucción de Presupuesto (Acción Requerida)")
+    alertas_sem = pd.DataFrame({
+        "Campaña": ["LOCAL_Rafelbunyol", "GLOBAL_Flota", "BRAND_Wheely"],
+        "Anomalía Detectada": ["Tráfico cruzado: Búsqueda de 'compra/venta'", "Pico de CPC (+45%) en 'Santorini'", "Canibalización SEO vs SEM"],
+        "Solución Propuesta IA": ["Negativizar en FRASE el clúster [venta, segunda mano, comprar]", "Reducir CPA Max un 15% temporalmente", "Pausar anuncio. Ya estamos Top 1 Orgánico."],
+        "Impacto Diario (€)": ["Salva 12€/día", "Salva 8€/día", "Salva 25€/día"]
+    })
+    st.data_editor(alertas_sem, use_container_width=True, hide_index=True)
+    
+    if st.button("Aplicar Escudos Financieros SEM a Google Ads"):
+        st.success("Reglas de negativización y ajustes de puja inyectados vía API correctamente.")
+
+    # --- GRÁFICA DE EVOLUCIÓN PLOTLY ---
+    st.subheader("Evolución de Gasto vs Retorno")
+    df_tendencia_sem = df_sem.groupby('Fecha').agg({'Coste (€)': 'sum', 'Valor (€)': 'sum'}).reset_index()
+    fig_sem = go.Figure()
+    fig_sem.add_trace(go.Bar(x=df_tendencia_sem['Fecha'], y=df_tendencia_sem['Coste (€)'], name='Inversión (€)', marker_color='#ea4335'))
+    fig_sem.add_trace(go.Scatter(x=df_tendencia_sem['Fecha'], y=df_tendencia_sem['Valor (€)'], mode='lines+markers', name='Retorno (€)', line=dict(color='#1a73e8', width=3)))
+    fig_sem.update_layout(barmode='group')
+    st.plotly_chart(fig_sem, use_container_width=True)
+
+
+# ==========================================
+# 5. HEMISFERIO 2: SEO & CONTENT ENGINE
+# ==========================================
+elif hemisferio == "📝 SEO (Content Factory & Orgánico)":
     st.title("📝 Director de Contenidos Autónomo (SEO)")
-    st.markdown("El agente monitoriza la web, ingiere el histórico de éxito y redacta propuestas diarias orientadas a dominar las SERPs para atraer reservas orgánicas.")
+    st.markdown("El agente ingiere el histórico de éxito y redacta propuestas diarias orientadas a dominar las SERPs para atraer reservas orgánicas.")
     
     tab_seo1, tab_seo2, tab_seo3 = st.tabs(["🧠 Generación Diaria (Fábrica)", "📈 Analítica Orgánica", "📚 Ingesta Histórica (Top 50)"])
     
-    # --- TAB 1: FÁBRICA DE CONTENIDOS ---
+    # --- TAB 1: FÁBRICA ---
     with tab_seo1:
         st.header("Propuestas de Publicación para Hoy")
         st.markdown(f"*Fecha de evaluación: {datetime.today().strftime('%d de %B de %Y')}*")
@@ -157,10 +220,10 @@ if hemisferio == "📝 SEO (Content Factory & Orgánico)":
         **Decisión algorítmica: Se recomienda publicar la Opción 2 ("Escapadas desde Rafelbunyol: 5 destinos a menos de 100km").**
         
         **Razonamiento SEO y de Negocio (Pensamiento Crítico):**
-        1. **Ratio Esfuerzo/Recompensa (KD vs Vol):** Tiene una Dificultad de Palabra Clave (KD) bajísima (15/100). Podemos posicionar este artículo en el Top 3 de Google en menos de 3 semanas sin necesidad de linkbuilding agresivo.
+        1. **Ratio Esfuerzo/Recompensa (KD vs Vol):** Tiene una Dificultad de Palabra Clave (KD) bajísima (15/100). Podemos posicionar este artículo en el Top 3 de Google en menos de 3 semanas.
         2. **Intención Transaccional Localizada:** Quien busca "rutas cerca de valencia" está planificando un viaje a corto plazo. No está curioseando.
-        3. **Alineación con el Modelo de Rentabilidad:** Destacar el radio de "100km" refuerza psicológicamente la rentabilidad del kilometraje base de la empresa. Atrae a un cliente que consume pocas noches, pero no gasta el motor de la furgoneta. Menos mantenimiento = Mayor LTV (Life Time Value) del vehículo.
-        4. **Descarte de rivales:** La "Guía de climatización" (Opción 4) trae mucho tráfico, pero atrae a "manitas" que camperizan, no a clientes de alquiler. Ensucia el embudo de retargeting en Ads. La "Ruta de Festivales" (Opción 1) es excelente para *Brand Awareness*, pero requiere un presupuesto de promoción y redes sociales asociado para capitalizarla; recomiendo guardarla para la campaña de primavera.
+        3. **Alineación con el Modelo de Rentabilidad:** Destacar el radio de "100km" refuerza psicológicamente la rentabilidad del kilometraje base de la empresa. Atrae a un cliente que consume pocas noches, pero no gasta el motor de la furgoneta. 
+        4. **Descarte de rivales:** La "Guía de climatización" (Opción 4) trae mucho tráfico, pero atrae a "manitas" que camperizan, no a clientes de alquiler. Ensucia el embudo de retargeting en Ads.
         """)
         
         st.divider()
@@ -170,7 +233,6 @@ if hemisferio == "📝 SEO (Content Factory & Orgánico)":
             with st.expander(f"Opción {index + 1}: {row['Título Propuesto']}"):
                 colA, colB, colC = st.columns(3)
                 colA.metric("Volumen Búsqueda", row['Vol. Búsqueda (Mes)'])
-                
                 kd = row['Keyword Difficulty (1-100)']
                 color_kd = "🟢 Fácil" if kd < 30 else "🟡 Media" if kd < 60 else "🔴 Difícil"
                 colB.metric("Dificultad (KD)", f"{kd}/100 ({color_kd})")
@@ -178,10 +240,8 @@ if hemisferio == "📝 SEO (Content Factory & Orgánico)":
                 
                 st.markdown(f"**Ángulo Estratégico (Por qué escribir esto):** {row['Ángulo Estratégico']}")
                 
-                col_btn1, col_btn2 = st.columns([1, 4])
-                with col_btn1:
-                    if st.button(f"Aprobar y Enviar a Web", key=f"pub_{index}"):
-                        st.success(f"Artículo '{row['Título Propuesto']}' enviado al CMS (Draft) para revisión final.")
+                if st.button(f"Aprobar y Enviar a Web", key=f"pub_{index}"):
+                    st.success(f"Artículo '{row['Título Propuesto']}' enviado al CMS (Draft) para revisión final.")
     
     # --- TAB 2: ANALÍTICA ORGÁNICA ---
     with tab_seo2:
@@ -199,49 +259,9 @@ if hemisferio == "📝 SEO (Content Factory & Orgánico)":
         fig_seo.update_traces(line_color="#34a853")
         st.plotly_chart(fig_seo, use_container_width=True)
 
-    # --- TAB 3: INGESTA HISTÓRICA ---
+    # --- TAB 3: HISTÓRICO ---
     with tab_seo3:
         st.header("Memoria Base: Los 50 Pilares de Tráfico")
-        st.markdown("El Agente utiliza los datos de estas URLs históricas para comprender qué temáticas resuenan mejor con la audiencia y generan la mayor **Tasa de Conversión a Reserva**.")
+        st.markdown("El Agente utiliza los datos de estas URLs históricas para comprender qué temáticas resuenan mejor con la audiencia.")
         st.dataframe(df_hist_seo, use_container_width=True)
-        
         st.info("💡 **Insights Extraídos del Histórico:** Los artículos con la palabra 'Ruta' generan mucho tráfico en la parte superior del embudo, pero los artículos que mencionan restricciones (pernocta, normativa, viajar con perro) tienen una tasa de conversión a reserva de pasarela 3 veces superior porque resuelven fricciones previas a la compra.")
-
-# ==========================================
-# 5. HEMISFERIO 2: SEM & PERFORMANCE
-# ==========================================
-elif hemisferio == "🛰️ SEM (Google Ads Performance)":
-    st.title("🛰️ Director de Performance (SEM Ads)")
-    st.markdown("Control de inyección de capital en subastas de Google Ads. Optimización implacable por ROAS y protección de fugas hacia concordancia exacta ineficiente.")
-    
-    col_sem1, col_sem2, col_sem3 = st.columns(3)
-    
-    coste_total = df_sem['Coste (€)'].sum()
-    valor_total = df_sem['Valor (€)'].sum()
-    roas = valor_total / coste_total if coste_total > 0 else 0
-    
-    with col_sem1:
-        st.markdown(f"""<div class="metric-card sem-card"><div class="metric-title">Inversión (Últimos 30d)</div><div class="metric-value">{coste_total:,.2f} €</div></div>""", unsafe_allow_html=True)
-    with col_sem2:
-        st.markdown(f"""<div class="metric-card sem-card"><div class="metric-title">Valor Retornado (Reservas)</div><div class="metric-value">{valor_total:,.2f} €</div></div>""", unsafe_allow_html=True)
-    with col_sem3:
-        st.markdown(f"""<div class="metric-card sem-card"><div class="metric-title">ROAS Consolidado</div><div class="metric-value">{roas:.2f}x</div></div>""", unsafe_allow_html=True)
-
-    st.subheader("Alertas de Destrucción de Presupuesto (Acción Requerida)")
-    
-    alertas_sem = pd.DataFrame({
-        "Campaña": ["LOCAL_Rafelbunyol", "GLOBAL_Flota", "BRAND_Wheely"],
-        "Anomalía Detectada": ["Tráfico cruzado: Búsqueda de 'compra/venta'", "Pico de CPC (+45%) en 'Santorini'", "Canibalización SEO vs SEM"],
-        "Solución Propuesta IA": ["Negativizar en FRASE el clúster [venta, segunda mano, comprar]", "Reducir CPA Max un 15% temporalmente", "Pausar anuncio. Ya estamos Top 1 Orgánico."],
-        "Impacto (€)": ["Salva 45€/sem", "Salva 20€/sem", "Salva 80€/sem"]
-    })
-    
-    st.data_editor(alertas_sem, use_container_width=True, hide_index=True)
-    
-    if st.button("Aplicar Escudos Financieros SEM"):
-        st.success("Reglas de negativización y ajustes de puja inyectados vía API en Google Ads.")
-
-    st.subheader("Evolución de Gasto vs Retorno")
-    df_tendencia_sem = df_sem.groupby('Fecha').agg({'Coste (€)': 'sum', 'Valor (€)': 'sum'}).reset_index()
-    fig_sem = go.Figure()
-    fig_sem.add_trace(go.Bar(x=df_tendencia_sem
