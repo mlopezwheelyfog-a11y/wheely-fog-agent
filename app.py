@@ -243,32 +243,61 @@ elif hemisferio == "🛰️ SEM (Google Ads Performance)":
     fig_sem.add_trace(go.Scatter(x=df_tendencia_sem['Fecha'], y=df_tendencia_sem['Valor (€)'], mode='lines+markers', name='Retorno (€)', line=dict(color='#1a73e8', width=3)))
     fig_sem.update_layout(barmode='group')
     st.plotly_chart(fig_sem, use_container_width=True)
-# --- BLOQUE DE CHAT AGENTE CON MEMORIA (Insertar después de los imports) ---
+import streamlit as st
+import pandas as pd
+import random
+
+# --- HERRAMIENTAS (SIMULADOR DE API) ---
+# Aquí es donde conectaremos Search Console y Google Ads
+def tool_get_search_volume(brand_term="Wheely Fog"):
+    # En el futuro, esto hará un request real a Google Search Console API
+    # Simulación de datos actuales
+    searches = random.randint(1200, 1500) 
+    trend = "+12%"
+    return {"busquedas": searches, "tendencia": trend}
+
+def tool_get_campaign_performance():
+    # Simulación de datos de Ads
+    return {"roas": 3.8, "cpa": 12.50}
+
+# --- LÓGICA DEL AGENTE ESTRATEGA ---
+def get_ai_strategic_advice(query, data_brand, data_performance):
+    """Aquí ocurre el pensamiento crítico. El agente cruza datos y decide."""
+    
+    # Lógica de Pensamiento Crítico
+    if "wheely fog" in query.lower() or "marca" in query.lower():
+        if int(data_brand['busquedas']) > 1000:
+            return f"He detectado {data_brand['busquedas']} búsquedas de marca ({data_brand['tendencia']}). El crecimiento es sano y orgánico. Dado que el ROAS es de {data_performance['roas']}x, mi recomendación estratégica es **aumentar el presupuesto de marca un 10%**. Estamos en un punto dulce: la marca está traccionando sola y el tráfico de pago está siendo rentable."
+        else:
+            return "El volumen de búsqueda de marca está estancado. Antes de invertir más, sugiero revisar si estamos perdiendo impresiones por ranking."
+    
+    return "No tengo suficientes datos específicos para esa consulta. Por favor, especifica si quieres analizar Marca o Rendimiento de Campañas."
+
+# --- INTERFAZ DEL CHAT ---
+st.title("🛰️ Centro de Mando: Agente Operativo")
 
 if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "assistant", "content": "Hola, soy tu estratega de Wheely Fog. He analizado el histórico. ¿Quieres que evalúe si nos conviene priorizar la campaña de 'Venta Flota' o centrarnos en las 'Reservas de Alquiler' para este mes?"}
-    ]
+    st.session_state.messages = []
 
-# Sidebar Chat
-with st.sidebar:
-    st.divider()
-    st.subheader("🧠 Asistente Estratégico (IA)")
-    
-    # Visualización de historial de chat
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+# Mostrar historial
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-    # Input de usuario
-    if prompt := st.chat_input("Pregúntame algo sobre los datos..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+# Input de usuario
+if prompt := st.chat_input("Pregunta al agente (ej: ¿Cómo va la marca? ¿Invertimos más?)"):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-        # Lógica de respuesta crítica
-        with st.chat_message("assistant"):
-            # Aquí iría la llamada al modelo que cruza (Datos + Memoria)
-            response = f"Analizando histórico y contexto actual... Basándome en la estrategia de rentabilidad (100km/noche), mi recomendación para '{prompt}' es..."
+    with st.chat_message("assistant"):
+        with st.spinner("Consultando APIs de Google..."):
+            # 1. El agente "ejecuta" las herramientas para obtener datos reales
+            brand_data = tool_get_search_volume()
+            ads_data = tool_get_campaign_performance()
+            
+            # 2. El agente procesa los datos con pensamiento crítico
+            response = get_ai_strategic_advice(prompt, brand_data, ads_data)
+            
             st.markdown(response)
             st.session_state.messages.append({"role": "assistant", "content": response})
