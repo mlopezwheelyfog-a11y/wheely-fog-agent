@@ -8,7 +8,12 @@ from datetime import datetime, timedelta
 # ==========================================
 # 1. CONFIGURACIÓN CORE Y ESTILOS
 # ==========================================
-st.set_page_config(page_title="Wheely Fog | Google AI Agent", page_icon="🧠", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title="Wheely Fog | Google AI Agent", 
+    page_icon="🧠", 
+    layout="wide", 
+    initial_sidebar_state="expanded"
+)
 
 st.markdown("""
     <style>
@@ -39,7 +44,15 @@ def load_sem_data():
         coste = clics * np.random.uniform(0.50, 1.50)
         conversiones = int(clics * np.random.uniform(0.01, 0.1))
         valor = conversiones * np.random.uniform(150, 450) if conversiones > 0 else 0
-        data.append({"Fecha": np.random.choice(fechas), "Término": terminos[idx], "Impresiones": impresiones, "Clics": clics, "Coste (€)": coste, "Conversiones": conversiones, "Valor (€)": valor})
+        data.append({
+            "Fecha": np.random.choice(fechas), 
+            "Término": terminos[idx], 
+            "Impresiones": impresiones, 
+            "Clics": clics, 
+            "Coste (€)": coste, 
+            "Conversiones": conversiones, 
+            "Valor (€)": valor
+        })
     return pd.DataFrame(data)
 
 @st.cache_data
@@ -56,7 +69,7 @@ def load_seo_historical_blogs():
 
 @st.cache_data
 def load_daily_content_proposals():
-    """Generador autónomo de 5 artículos diarios basados en cruce de datos SEO."""
+    """Generador autónomo de artículos diarios basados en cruce de datos SEO."""
     propuestas = [
         {
             "Título Propuesto": "Ruta de los Festivales 2026: Cómo preparar tu Camper para la temporada musical",
@@ -116,7 +129,7 @@ with st.sidebar:
     hemisferio = st.radio(
         "Módulos Activos:",
         ("🛰️ SEM (Google Ads Performance)", "📝 SEO (Content Factory & Orgánico)"),
-        index=1 # Empezamos en SEO por defecto para mostrarte la novedad
+        index=1  # Inicia en SEO de forma predeterminada
     )
     
     st.divider()
@@ -130,18 +143,15 @@ with st.sidebar:
 # ==========================================
 if hemisferio == "📝 SEO (Content Factory & Orgánico)":
     st.title("📝 Director de Contenidos Autónomo (SEO)")
-    st.markdown("El agente monitoriza la web, ingiere el histórico de éxito y redacta propuestas diarias orientadas a dominar las SERPs (Páginas de Resultados de Google) para atraer reservas orgánicas.")
+    st.markdown("El agente monitoriza la web, ingiere el histórico de éxito y redacta propuestas diarias orientadas a dominar las SERPs para atraer reservas orgánicas.")
     
     tab_seo1, tab_seo2, tab_seo3 = st.tabs(["🧠 Generación Diaria (Fábrica)", "📈 Analítica Orgánica", "📚 Ingesta Histórica (Top 50)"])
     
-    # ------------------------------------------
-    # TAB: FÁBRICA DE CONTENIDOS (EL NÚCLEO)
-    # ------------------------------------------
+    # --- TAB 1: FÁBRICA DE CONTENIDOS ---
     with tab_seo1:
         st.header("Propuestas de Publicación para Hoy")
         st.markdown(f"*Fecha de evaluación: {datetime.today().strftime('%d de %B de %Y')}*")
         
-        # EL DICTAMEN DE LA IA (PENSAMIENTO CRÍTICO)
         st.markdown("### 🏆 Veredicto Estratégico del Agente IA")
         st.info("""
         **Decisión algorítmica: Se recomienda publicar la Opción 2 ("Escapadas desde Rafelbunyol: 5 destinos a menos de 100km").**
@@ -160,7 +170,7 @@ if hemisferio == "📝 SEO (Content Factory & Orgánico)":
             with st.expander(f"Opción {index + 1}: {row['Título Propuesto']}"):
                 colA, colB, colC = st.columns(3)
                 colA.metric("Volumen Búsqueda", row['Vol. Búsqueda (Mes)'])
-                # Lógica visual para la dificultad
+                
                 kd = row['Keyword Difficulty (1-100)']
                 color_kd = "🟢 Fácil" if kd < 30 else "🟡 Media" if kd < 60 else "🔴 Difícil"
                 colB.metric("Dificultad (KD)", f"{kd}/100 ({color_kd})")
@@ -173,9 +183,7 @@ if hemisferio == "📝 SEO (Content Factory & Orgánico)":
                     if st.button(f"Aprobar y Enviar a Web", key=f"pub_{index}"):
                         st.success(f"Artículo '{row['Título Propuesto']}' enviado al CMS (Draft) para revisión final.")
     
-    # ------------------------------------------
-    # TAB: ANALÍTICA ORGÁNICA
-    # ------------------------------------------
+    # --- TAB 2: ANALÍTICA ORGÁNICA ---
     with tab_seo2:
         st.header("Rendimiento Orgánico General (Search Console)")
         col1, col2, col3 = st.columns(3)
@@ -183,21 +191,18 @@ if hemisferio == "📝 SEO (Content Factory & Orgánico)":
         col2.metric("Impresiones en Google", "185,400", "+5.2%")
         col3.metric("Posición Media Global", "14.2", "+1.1")
         
-        # Gráfico simulado de tráfico orgánico
         fechas_seo = pd.date_range(end=datetime.today(), periods=30)
-        trafico_seo = np.random.normal(loc=500, scale=50, size=30) + np.arange(30) * 2 # Tendencia al alza
+        trafico_seo = np.random.normal(loc=500, scale=50, size=30) + np.arange(30) * 2
         df_trafico_seo = pd.DataFrame({"Fecha": fechas_seo, "Clics Orgánicos": trafico_seo})
         
         fig_seo = px.line(df_trafico_seo, x="Fecha", y="Clics Orgánicos", title="Evolución de Tráfico SEO (Crecimiento de Autoridad)")
         fig_seo.update_traces(line_color="#34a853")
         st.plotly_chart(fig_seo, use_container_width=True)
 
-    # ------------------------------------------
-    # TAB: INGESTA HISTÓRICA
-    # ------------------------------------------
+    # --- TAB 3: INGESTA HISTÓRICA ---
     with tab_seo3:
         st.header("Memoria Base: Los 50 Pilares de Tráfico")
-        st.markdown("El Agente utiliza los datos de estas URLs históricas para comprender qué temáticas resuenan mejor con la audiencia y generan la mayor **Tasa de Conversión a Reserva**, no solo clics vacíos.")
+        st.markdown("El Agente utiliza los datos de estas URLs históricas para comprender qué temáticas resuenan mejor con la audiencia y generan la mayor **Tasa de Conversión a Reserva**.")
         st.dataframe(df_hist_seo, use_container_width=True)
         
         st.info("💡 **Insights Extraídos del Histórico:** Los artículos con la palabra 'Ruta' generan mucho tráfico en la parte superior del embudo, pero los artículos que mencionan restricciones (pernocta, normativa, viajar con perro) tienen una tasa de conversión a reserva de pasarela 3 veces superior porque resuelven fricciones previas a la compra.")
@@ -239,65 +244,4 @@ elif hemisferio == "🛰️ SEM (Google Ads Performance)":
     st.subheader("Evolución de Gasto vs Retorno")
     df_tendencia_sem = df_sem.groupby('Fecha').agg({'Coste (€)': 'sum', 'Valor (€)': 'sum'}).reset_index()
     fig_sem = go.Figure()
-    fig_sem.add_trace(go.Bar(x=df_tendencia_sem['Fecha'], y=df_tendencia_sem['Coste (€)'], name='Inversión (€)', marker_color='#ea4335'))
-    fig_sem.add_trace(go.Scatter(x=df_tendencia_sem['Fecha'], y=df_tendencia_sem['Valor (€)'], mode='lines+markers', name='Retorno (€)', line=dict(color='#1a73e8', width=3)))
-    fig_sem.update_layout(barmode='group')
-    st.plotly_chart(fig_sem, use_container_width=True)
-import streamlit as st
-import pandas as pd
-import random
-
-# --- HERRAMIENTAS (SIMULADOR DE API) ---
-# Aquí es donde conectaremos Search Console y Google Ads
-def tool_get_search_volume(brand_term="Wheely Fog"):
-    # En el futuro, esto hará un request real a Google Search Console API
-    # Simulación de datos actuales
-    searches = random.randint(1200, 1500) 
-    trend = "+12%"
-    return {"busquedas": searches, "tendencia": trend}
-
-def tool_get_campaign_performance():
-    # Simulación de datos de Ads
-    return {"roas": 3.8, "cpa": 12.50}
-
-# --- LÓGICA DEL AGENTE ESTRATEGA ---
-def get_ai_strategic_advice(query, data_brand, data_performance):
-    """Aquí ocurre el pensamiento crítico. El agente cruza datos y decide."""
-    
-    # Lógica de Pensamiento Crítico
-    if "wheely fog" in query.lower() or "marca" in query.lower():
-        if int(data_brand['busquedas']) > 1000:
-            return f"He detectado {data_brand['busquedas']} búsquedas de marca ({data_brand['tendencia']}). El crecimiento es sano y orgánico. Dado que el ROAS es de {data_performance['roas']}x, mi recomendación estratégica es **aumentar el presupuesto de marca un 10%**. Estamos en un punto dulce: la marca está traccionando sola y el tráfico de pago está siendo rentable."
-        else:
-            return "El volumen de búsqueda de marca está estancado. Antes de invertir más, sugiero revisar si estamos perdiendo impresiones por ranking."
-    
-    return "No tengo suficientes datos específicos para esa consulta. Por favor, especifica si quieres analizar Marca o Rendimiento de Campañas."
-
-# --- INTERFAZ DEL CHAT ---
-st.title("🛰️ Centro de Mando: Agente Operativo")
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Mostrar historial
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# Input de usuario
-if prompt := st.chat_input("Pregunta al agente (ej: ¿Cómo va la marca? ¿Invertimos más?)"):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    with st.chat_message("assistant"):
-        with st.spinner("Consultando APIs de Google..."):
-            # 1. El agente "ejecuta" las herramientas para obtener datos reales
-            brand_data = tool_get_search_volume()
-            ads_data = tool_get_campaign_performance()
-            
-            # 2. El agente procesa los datos con pensamiento crítico
-            response = get_ai_strategic_advice(prompt, brand_data, ads_data)
-            
-            st.markdown(response)
-            st.session_state.messages.append({"role": "assistant", "content": response})
+    fig_sem.add_trace(go.Bar(x=df_tendencia_sem
