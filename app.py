@@ -243,3 +243,32 @@ elif hemisferio == "🛰️ SEM (Google Ads Performance)":
     fig_sem.add_trace(go.Scatter(x=df_tendencia_sem['Fecha'], y=df_tendencia_sem['Valor (€)'], mode='lines+markers', name='Retorno (€)', line=dict(color='#1a73e8', width=3)))
     fig_sem.update_layout(barmode='group')
     st.plotly_chart(fig_sem, use_container_width=True)
+# --- BLOQUE DE CHAT AGENTE CON MEMORIA (Insertar después de los imports) ---
+
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {"role": "assistant", "content": "Hola, soy tu estratega de Wheely Fog. He analizado el histórico. ¿Quieres que evalúe si nos conviene priorizar la campaña de 'Venta Flota' o centrarnos en las 'Reservas de Alquiler' para este mes?"}
+    ]
+
+# Sidebar Chat
+with st.sidebar:
+    st.divider()
+    st.subheader("🧠 Asistente Estratégico (IA)")
+    
+    # Visualización de historial de chat
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # Input de usuario
+    if prompt := st.chat_input("Pregúntame algo sobre los datos..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        # Lógica de respuesta crítica
+        with st.chat_message("assistant"):
+            # Aquí iría la llamada al modelo que cruza (Datos + Memoria)
+            response = f"Analizando histórico y contexto actual... Basándome en la estrategia de rentabilidad (100km/noche), mi recomendación para '{prompt}' es..."
+            st.markdown(response)
+            st.session_state.messages.append({"role": "assistant", "content": response})
