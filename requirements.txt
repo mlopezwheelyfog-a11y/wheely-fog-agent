@@ -1,4 +1,2 @@
-streamlit
-pandas
-numpy
-plotly
+pip install streamlit pandas numpy plotly
+streamlit run app.py
