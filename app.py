@@ -1,623 +1,557 @@
-"use client";
+# -*- coding: utf-8 -*-
+"""
+WheelyFog AI - Central Command (Streamlit)
+============================================================================
+Version corregida del prototipo + modulo de recomendaciones del agente.
 
-/**
- * WheelyFog AI — Central Command (Next.js / App Router)
- * ----------------------------------------------------------------------------
- * Conversión del prototipo Streamlit a Next.js + React + Recharts.
- *
- * INSTALACIÓN (Next.js 14/15 App Router):
- *   1) Coloca este archivo en  app/page.jsx
- *   2) npm install recharts
- *   3) Necesitas Tailwind configurado (npx create-next-app --tailwind).
- *
- * FIXES aplicados respecto al original:
- *   - [BUG botones anidados] La generación de artículo y la aprobación ya NO
- *     dependen de un botón dentro de otro: se controlan con estado (useState).
- *   - [Metodología] La "Posición Media Global" ahora es PONDERADA por tráfico,
- *     no una media aritmética (que mezclaba keywords de volúmenes distintos).
- *   - [Incoherencia marca] El motor de recomendaciones NUNCA propone pausar la
- *     puja de marca ("wheely fog") siendo Top 1 orgánico: la protege.
- *   - Datos deterministas (RNG sembrado) -> sin desajustes de hidratación SSR.
- *
- * AÑADIDO (lo que pediste como experto en posicionamiento):
- *   - Módulo "🤖 Recomendaciones del Agente": sugerencias diarias/semanales con
- *     detección automática de CHOQUE DE INTENCIÓN (compra vs alquiler),
- *     fugas de presupuesto, canibalización y oportunidades SEO. Cada tarjeta
- *     se puede Aplicar o Descartar (cola de acción con humano en el bucle).
- * ----------------------------------------------------------------------------
- */
+FIXES aplicados respecto al original:
+  - [BUG botones anidados] Generacion de articulo y aprobacion controladas con
+    st.session_state (NO un boton dentro de otro -> ya funciona en cada rerun).
+  - [Metodologia] La "Posicion Media" del SEO ahora es PONDERADA por trafico,
+    no una media aritmetica (que mezclaba keywords de volumenes distintos).
+  - [Incoherencia marca] El motor de recomendaciones NUNCA propone pausar la
+    puja de marca "wheely fog" siendo Top 1 organico: la protege.
+  - [Honestidad de estado] Los badges de API ya no dicen "Sincronizada"
+    decorativo: reflejan que Google Ads / GSC / GA4 estan SIN conectar.
 
-import { useMemo, useState } from "react";
-import {
-  ResponsiveContainer, BarChart, Bar, LineChart, Line, ComposedChart,
-  PieChart, Pie, Cell, ScatterChart, Scatter, XAxis, YAxis, ZAxis,
-  CartesianGrid, Tooltip, Legend,
-} from "recharts";
+ANADIDO (lo pedido como experto en posicionamiento):
+  - Modulo "Recomendaciones del Agente": sugerencias diarias/semanales con
+    deteccion automatica de CHOQUE DE INTENCION (compra vs alquiler), fugas de
+    presupuesto, canibalizacion y oportunidades SEO. Cada accion se Aplica
+    (cola de aprobacion - humano en el bucle) o se Descarta.
 
-/* ===========================================================================
-   PALETA Y HELPERS
-   =========================================================================== */
-const C = { seo: "#34a853", sem: "#ea4335", cross: "#fbbc05", global: "#4285f4" };
-const eur = (n) => `${n.toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
-const num = (n) => n.toLocaleString("es-ES");
+Ejecutar:  streamlit run app.py
+Requisitos: streamlit, pandas, numpy, plotly
+============================================================================
+"""
 
-// RNG determinista (mulberry32) para reproducir np.random.seed(42)
-function mulberry32(seed) {
-  return function () {
-    seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
+from datetime import datetime, timedelta
 
-/* ===========================================================================
-   1. GENERADORES DE DATOS SINTÉTICOS (portados del Python)
-   ⚠️ Reemplazar por Google Ads API / Search Console cuando estén conectados.
-   =========================================================================== */
-function buildSemDataset() {
-  const rng = mulberry32(42);
-  const ri = (a, b) => Math.floor(rng() * (b - a + 1)) + a;
-  const rf = (a, b) => rng() * (b - a) + a;
-  const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+# ==========================================
+# 1. CONFIGURACION GLOBAL Y ESTILOS
+# ==========================================
+st.set_page_config(page_title="WheelyFog AI", page_icon="🚐", layout="wide")
 
-  const today = new Date();
-  const fechas = Array.from({ length: 90 }, (_, i) => {
-    const d = new Date(today); d.setDate(d.getDate() - i);
-    return d.toISOString().slice(0, 10);
-  });
-  const campañas = ["LOCAL_Rafelbunyol", "GLOBAL_Flota_España", "BRAND_WheelyFog", "RETARGETING_Comunidad"];
-  const terminos = [
-    "alquiler camper valencia", "alquiler furgoneta camper", "comprar camper segunda mano",
-    "camperizacion valencia", "wheely fog", "camper santorini alquiler", "rutas camper valencia",
-    "camper barata valencia", "alquiler autocaravana rafelbunyol", "viajar en camper 2 personas",
-    "furgoneta camperizada alquiler",
-  ];
+COLORS = {"seo": "#34a853", "sem": "#ea4335", "cross": "#fbbc05", "global": "#4285f4"}
 
-  const data = [];
-  for (let i = 0; i < 1000; i++) {
-    const camp = pick(campañas);
-    const term = pick(terminos);
-    const fecha = pick(fechas);
-    let impresiones, ctr, cpc, cvr;
-    if (camp === "BRAND_WheelyFog") {
-      impresiones = ri(100, 800); ctr = rf(0.15, 0.35); cpc = rf(0.10, 0.30); cvr = rf(0.05, 0.15);
-    } else {
-      impresiones = ri(50, 500); ctr = rf(0.02, 0.12); cpc = rf(0.50, 2.10); cvr = rf(0.0, 0.04);
-    }
-    const clics = Math.round(impresiones * ctr);
-    const coste = clics * cpc;
-    const conversiones = Math.round(clics * cvr);
-    const valor = conversiones > 0 ? conversiones * rf(150, 600) : 0;
-    data.push({ Fecha: fecha, Campaña: camp, Término: term, Impresiones: impresiones, Clics: clics, Coste: coste, Conversiones: conversiones, Valor: valor });
-  }
-  return data.sort((a, b) => (a.Fecha < b.Fecha ? 1 : -1));
-}
+st.markdown("""
+<style>
+    .main { background-color: #f8f9fa; }
+    .block-container { padding-top: 2rem; }
+    div[data-testid="stMetric"] { background:#fff; border:1px solid #e0e0e0; border-radius:12px; padding:16px; }
+    .metric-card { background:#fff; border-radius:12px; padding:18px; border:1px solid #e0e0e0; box-shadow:0 1px 3px rgba(0,0,0,0.05); }
+    .metric-title { font-size:.75rem; font-weight:700; text-transform:uppercase; color:#5f6368; letter-spacing:.5px; }
+    .metric-value { font-size:2rem; font-weight:800; color:#202124; margin:6px 0; }
+    .blog-container { background:#f8f9fa; padding:24px; border-radius:8px; border-left:4px solid #34a853; margin-top:12px; line-height:1.6; }
+    .img-suggestion { background:#e8f0fe; color:#1a73e8; padding:14px; border-radius:6px; font-family:monospace; margin:16px 0; border:1px dashed #1a73e8; font-size:.85rem; }
+    .rec-card { background:#fff; border:1px solid #e0e0e0; border-radius:12px; padding:18px; margin-bottom:14px; }
+    .tag { display:inline-block; padding:2px 8px; border-radius:5px; font-size:.72rem; font-weight:600; margin-right:6px; }
+    .tag-alta { background:#fce8e6; color:#c5221f; }
+    .tag-media { background:#fef7e0; color:#b06000; }
+    .tag-info { background:#e8f0fe; color:#1a73e8; }
+    .tag-canal { background:#f1f3f4; color:#5f6368; }
+</style>
+""", unsafe_allow_html=True)
 
-const SEO_DATA = [
-  { URL: "/rutas/costa-blanca-camper", kw: "ruta costa blanca camper", trafico: 4500, pos: 1.4, vol: 12000, kd: 24, cvr: 0.018 },
-  { URL: "/guias/normativa-pernocta-comunidad-valenciana", kw: "pernocta comunidad valenciana", trafico: 3800, pos: 1.2, vol: 8500, kd: 15, cvr: 0.006 },
-  { URL: "/modelos/diferencias-minivan-gran-volumen", kw: "minivan vs gran volumen", trafico: 2900, pos: 2.8, vol: 4100, kd: 35, cvr: 0.029 },
-  { URL: "/consejos/viajar-con-perro-autocaravana", kw: "viajar con perro camper", trafico: 2100, pos: 3.2, vol: 5600, kd: 42, cvr: 0.034 },
-  { URL: "/eventos/festivales-musica-espana-camper", kw: "festivales en camper", trafico: 1950, pos: 4.1, vol: 9000, kd: 55, cvr: 0.042 },
-  { URL: "/rutas/escapadas-fin-de-semana-rafelbunyol", kw: "rutas camper cerca de valencia", trafico: 1400, pos: 1.5, vol: 4200, kd: 12, cvr: 0.025 },
-  { URL: "/", kw: "wheely fog", trafico: 5000, pos: 1.0, vol: 1500, kd: 5, cvr: 0.120 },
-  { URL: "/modelos/santorini-parejas", kw: "camper santorini alquiler", trafico: 1100, pos: 2.1, vol: 2100, kd: 28, cvr: 0.058 },
-  { URL: "/blog/bricolaje-aislamiento-termico", kw: "camperizacion valencia", trafico: 850, pos: 14.5, vol: 3300, kd: 65, cvr: 0.001 },
-  { URL: "/contacto", kw: "telefono wheely fog", trafico: 300, pos: 1.1, vol: 400, kd: 2, cvr: 0.080 },
-];
 
-const PROPOSALS = [
-  { titulo: "Guía Definitiva: Viaje a Eurodisney en Furgoneta Camper", kw: "eurodisney furgoneta camper", vol: 8500, kd: 24, intencion: "Transaccional / Alquiler Familiar", justificacion: "Este artículo ataca un viaje de +1.300km. Los dueños de campers antiguas temen averías en trayectos largos internacionales. El texto se sesga hacia la 'tranquilidad' de alquilar vehículos nuevos con seguro a todo riesgo, filtrando curiosos y atrayendo reservas familiares de alto ticket (7-10 días)." },
-  { titulo: "Escapadas de fin de semana desde Rafelbunyol: 5 destinos a menos de 100km", kw: "rutas camper cerca de valencia", vol: 4200, kd: 15, intencion: "Transaccional Local", justificacion: "Tráfico Bottom-of-Funnel (gente lista para salir este finde). El foco en rutas cortas excluye a nómadas con furgo propia y maximiza la tarifa base (100km/día), reduciendo depreciación del motor." },
-  { titulo: "Dónde alquilar campers baratas en Valencia sin sorpresas en el seguro", kw: "alquiler camper valencia barata", vol: 5600, kd: 42, intencion: "Transaccional / Precio", justificacion: "Resuelve la fricción pre-compra: el miedo a franquicias ocultas. Un artículo transparente roba clientes a plataformas P2P y convierte tráfico en alquileres cerrados." },
-];
-
-const CROSS = [
-  { kw: "alquiler camper valencia", pos: 2.4, trafico: 3100, gasto: 1450.20, roas: 4.8, estado: "🔥 Rendimiento Líder", accion: "Mantener Inversión" },
-  { kw: "camper santorini alquiler", pos: 2.1, trafico: 1100, gasto: 810.50, roas: 6.5, estado: "🔥 Rendimiento Líder", accion: "Escalar Presupuesto" },
-  { kw: "rutas camper cerca de valencia", pos: 1.5, trafico: 1400, gasto: 285.10, roas: 1.2, estado: "🌱 Optimizar SEO", accion: "Reducir Puja SEM" },
-  { kw: "comprar camper segunda mano", pos: 48.0, trafico: 5, gasto: 910.40, roas: 0.0, estado: "💸 Fuga Absoluta", accion: "Negativizar Exacta" },
-  { kw: "camperizacion valencia", pos: 14.5, trafico: 80, gasto: 495.00, roas: 0.4, estado: "💸 Fuga Absoluta", accion: "Negativizar Frase" },
-  { kw: "wheely fog", pos: 1.0, trafico: 5000, gasto: 145.00, roas: 14.2, estado: "🔥 Rendimiento Líder", accion: "Proteger Marca" },
-  { kw: "camper barata valencia", pos: 9.2, trafico: 110, gasto: 1280.60, roas: 3.1, estado: "🌱 Optimizar SEO", accion: "Crear Landing SEO" },
-];
-
-/* ===========================================================================
-   2. MOTOR DE RECOMENDACIONES (NUEVO)
-   Reglas de negocio de un gestor SEO/SEM. Más adelante esta capa la consume
-   un LLM (Claude tool-use) que razona sobre datos reales; aquí van las reglas.
-   =========================================================================== */
-// Léxico de intención. El negocio es ALQUILER; lo de compra/venta es ruido.
-const INTENT_COMPRA = ["comprar", "compra", "segunda mano", "venta", "vender", "ocasion", "ocasión", "km0", "km 0"];
-const INTENT_ALQUILER = ["alquiler", "alquilar", "rent", "fin de semana", "ruta", "escapada"];
-
-function detectaIntencion(kw) {
-  const k = kw.toLowerCase();
-  if (INTENT_COMPRA.some((t) => k.includes(t))) return "compra";
-  if (INTENT_ALQUILER.some((t) => k.includes(t))) return "alquiler";
-  return "informacional";
-}
-
-function buildRecommendations(cross, seo) {
-  const recs = [];
-  let id = 0;
-
-  cross.forEach((r) => {
-    const intent = detectaIntencion(r.kw);
-    const esMarca = r.kw.toLowerCase().includes("wheely fog");
-
-    // R1 — CHOQUE DE INTENCIÓN: keyword de compra consumiendo presupuesto de alquiler
-    if (intent === "compra" && r.gasto > 0) {
-      recs.push({
-        id: ++id, sev: "alta", canal: "SEM", freq: "diaria", kw: r.kw,
-        titulo: "Choque de intención: negativizar término de COMPRA",
-        detalle: `"${r.kw}" es intención de compra/venta, pero el negocio es alquiler. Está quemando ${eur(r.gasto)}/mes con ROAS ${r.roas.toFixed(1)}x. Todo ese tráfico rebota.`,
-        accion: `Añadir "${r.kw}" como negativa en concordancia de frase y exacta en todas las campañas de alquiler.`,
-        impacto: `Ahorro estimado: ${eur(r.gasto)}/mes`,
-      });
-      return;
-    }
-
-    // R2 — FUGA: gasto alto y ROAS bajo (sin ser marca)
-    if (!esMarca && r.roas < 1 && r.gasto > 300) {
-      recs.push({
-        id: ++id, sev: "alta", canal: "SEM", freq: "diaria", kw: r.kw,
-        titulo: "Fuga de presupuesto (ROAS < 1)",
-        detalle: `"${r.kw}" gasta ${eur(r.gasto)} y devuelve ROAS ${r.roas.toFixed(1)}x. Pierde dinero en cada clic.`,
-        accion: "Pausar el grupo de anuncios o bajar puja agresivamente y revisar la landing/coincidencia.",
-        impacto: `Recuperas margen sobre ${eur(r.gasto)}/mes`,
-      });
-      return;
-    }
-
-    // R3 — CANIBALIZACIÓN: Top SEO sólido + ROAS SEM flojo -> bajar puja (NO si es marca)
-    if (!esMarca && r.pos <= 3 && r.roas < 2 && r.gasto > 100) {
-      recs.push({
-        id: ++id, sev: "media", canal: "Cross", freq: "semanal", kw: r.kw,
-        titulo: "Canibalización: ya eres Top 3 orgánico",
-        detalle: `"${r.kw}" está en posición ${r.pos.toFixed(1)} orgánica con ROAS SEM ${r.roas.toFixed(1)}x. Estás pagando clics que ganarías gratis.`,
-        accion: "Reducir puja SEM un 40-60% y reinvertir en términos sin posición orgánica.",
-        impacto: "Recortas gasto redundante manteniendo el clic orgánico",
-      });
-      return;
-    }
-
-    // R4 — PROTECCIÓN DE MARCA (corrige la incoherencia del original)
-    if (esMarca) {
-      recs.push({
-        id: ++id, sev: "info", canal: "SEM", freq: "semanal", kw: r.kw,
-        titulo: "Proteger marca (NO pausar)",
-        detalle: `"${r.kw}" tiene ROAS ${r.roas.toFixed(1)}x y defenderla cuesta poco. Competidores y plataformas P2P (Yescapa, etc.) pujan tu marca.`,
-        accion: "Mantener campaña de marca activa. Defenderla es barato y evita que te roben tráfico de marca.",
-        impacto: "Blindas el tráfico de mayor conversión de la cuenta",
-      });
-      return;
-    }
-
-    // R5 — OPORTUNIDAD SEO: paga SEM pero sin posición orgánica decente
-    if (r.pos > 8 && r.roas >= 1) {
-      recs.push({
-        id: ++id, sev: "media", canal: "SEO", freq: "semanal", kw: r.kw,
-        titulo: "Crear/optimizar contenido orgánico",
-        detalle: `"${r.kw}" depende 100% de SEM (posición ${r.pos.toFixed(1)}). Sin contenido, el coste nunca baja.`,
-        accion: "Crear landing optimizada para esta keyword y meterla en el calendario editorial.",
-        impacto: "Reduce dependencia de puja a medio plazo",
-      });
-    }
-  });
-
-  // R6 — SEO: URLs con buena posición pero conversión bajísima (intención mal alineada)
-  seo.forEach((s) => {
-    if (s.pos <= 5 && s.cvr < 0.005 && s.trafico > 500) {
-      recs.push({
-        id: ++id, sev: "media", canal: "SEO", freq: "semanal", kw: s.kw,
-        titulo: "Tráfico que no convierte (revisar intención de la URL)",
-        detalle: `${s.URL} posiciona top (${s.pos.toFixed(1)}) y trae ${num(s.trafico)} visitas/mes, pero convierte al ${(s.cvr * 100).toFixed(2)}%. Atrae informacional, no comprador.`,
-        accion: "Añadir CTA de reserva y bloques de oferta a la URL para capturar la intención transaccional.",
-        impacto: `Monetiza ${num(s.trafico)} visitas/mes ya existentes`,
-      });
-    }
-  });
-
-  const orden = { alta: 0, media: 1, info: 2 };
-  return recs.sort((a, b) => orden[a.sev] - orden[b.sev]);
-}
-
-/* ===========================================================================
-   3. MOTOR DE REDACCIÓN IA (portado; sesga hacia alquiler, excluye propietarios)
-   =========================================================================== */
-function generateAiBlog(keyword, titulo) {
-  if (keyword.toLowerCase().includes("eurodisney")) {
-    return `
-      <h3>¿Te imaginas conocer el parque temático más famoso de Europa con tu casa sobre ruedas?</h3>
-      <p>En <strong>Wheely Fog</strong>, tu empresa de alquiler de furgonetas camper en Valencia, hemos diseñado un itinerario para que disfrutes de un viaje a Eurodisney lleno de magia. Tanto en familia como en pareja o con amigos, ofrecemos furgonetas camper de hasta 5 personas.</p>
-      <div class="img-suggestion">📸 <b>Prompt IA / Director de Arte:</b><br>"Fotografía hiperrealista. Familia feliz saliendo de una furgoneta camper moderna; de fondo desenfocado se intuye el castillo de Eurodisney. Golden hour."<br><i>Alt: Alquilar furgoneta camper en Valencia para ir a Eurodisney familiar.</i></div>
-      <h4>La mejor época y el factor "Tranquilidad"</h4>
-      <p>Recomendamos primavera-verano. El trayecto España-París supera los 1.300 km solo de ida. Muchos descartan la idea por miedo a desgastar su vehículo propio o antiguo. <strong>Alquilar una camper de última generación con Wheely Fog</strong> garantiza cero kilómetros en tu coche, motores revisados y seguro a todo riesgo europeo.</p>
-      <h4>Dormir en Eurodisney</h4>
-      <ul><li><strong>Parking del parque:</strong> zona para vaciar aguas, electricidad y baños.</li><li><strong>Camping Le Parc de Paris:</strong> a 20 min, supermercado y lavandería.</li></ul>
-      <p>Selecciona fechas en nuestra web y reserva hoy tu camper.</p>`;
-  }
-  return `
-    <h3>Descubre ${titulo}</h3>
-    <p>En <strong>Wheely Fog</strong> sabemos que las mejores aventuras están a la vuelta de la esquina. No necesitas expediciones de miles de kilómetros ni desgastar tu vehículo.</p>
-    <p>Nuestra filosofía: transparencia y rentabilidad. El alquiler base incluye <strong>100 km por noche</strong>, la distancia perfecta para salir de Rafelbunyol a paraísos naturales sin pagar extra de kilometraje.</p>
-    <div class="img-suggestion">📸 <b>Prompt IA:</b><br>"Furgoneta camper frente a la Albufera de Valencia al atardecer, dos sillas de camping y dos cafés en una mesa plegable."<br><i>Alt: Escapada camper barata desde Rafelbunyol Valencia.</i></div>
-    <p>Deja el mantenimiento y los seguros para nosotros. <i>(El artículo continuaría con las 5 rutas locales).</i></p>`;
-}
-
-/* ===========================================================================
-   COMPONENTES UI
-   =========================================================================== */
-function Metric({ title, value, type = "global", delta, deltaType = "up" }) {
-  return (
-    <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-200 transition-transform hover:-translate-y-0.5 hover:shadow-md"
-         style={{ borderLeft: `6px solid ${C[type]}` }}>
-      <div className="text-xs font-bold uppercase tracking-wide text-gray-500">{title}</div>
-      <div className="text-3xl font-extrabold text-gray-900 my-2">{value}</div>
-      {delta && (
-        <span className={`inline-block px-2.5 py-1 rounded-md text-xs font-semibold ${deltaType === "up" ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
-          {deltaType === "up" ? "↑" : "↓"} {delta}
-        </span>
-      )}
+def render_metric(title, value, color_type="global", delta=None, delta_type="up"):
+    """Tarjeta de KPI personalizada con borde de color por canal."""
+    border = COLORS.get(color_type, COLORS["global"])
+    delta_html = ""
+    if delta:
+        bg = "#e6f4ea" if delta_type == "up" else "#fce8e6"
+        fg = "#137333" if delta_type == "up" else "#c5221f"
+        arrow = "↑" if delta_type == "up" else "↓"
+        delta_html = f'<span style="background:{bg};color:{fg};padding:3px 8px;border-radius:6px;font-size:.75rem;font-weight:600;">{arrow} {delta}</span>'
+    st.markdown(f"""
+    <div class="metric-card" style="border-left:6px solid {border};">
+        <div class="metric-title">{title}</div>
+        <div class="metric-value">{value}</div>
+        {delta_html}
     </div>
-  );
-}
+    """, unsafe_allow_html=True)
 
-function sevBadge(sev) {
-  const map = { alta: "bg-red-100 text-red-700", media: "bg-yellow-100 text-yellow-800", info: "bg-blue-100 text-blue-700" };
-  const lbl = { alta: "Prioridad alta", media: "Prioridad media", info: "Informativo" };
-  return <span className={`px-2 py-0.5 rounded text-xs font-semibold ${map[sev]}`}>{lbl[sev]}</span>;
-}
 
-/* ===========================================================================
-   PÁGINA PRINCIPAL
-   =========================================================================== */
-export default function Page() {
-  const [modulo, setModulo] = useState("recom");
-  const [dias, setDias] = useState(30);
-  const [semSearch, setSemSearch] = useState("");
-  const [seoSearch, setSeoSearch] = useState("");
-  const [crossSearch, setCrossSearch] = useState("");
-  const [articulos, setArticulos] = useState({});       // index -> html (fix botón anidado)
-  const [aprobados, setAprobados] = useState({});        // index -> bool
-  const [recState, setRecState] = useState({});          // id -> "aplicada" | "descartada"
+# ==========================================
+# 2. GENERADORES DE DATOS SINTETICOS
+#    (Reemplazar por Google Ads API / GSC / GA4 cuando se conecten)
+# ==========================================
+@st.cache_data
+def load_sem_large_dataset():
+    """Dataset SEM sintetico (1000 filas). np.random fijo para reproducibilidad."""
+    np.random.seed(42)
+    today = datetime.today()
+    fechas = [today - timedelta(days=i) for i in range(90)]
+    campañas = ["LOCAL_Rafelbunyol", "GLOBAL_Flota_España", "BRAND_WheelyFog", "RETARGETING_Comunidad"]
+    terminos = [
+        "alquiler camper valencia", "alquiler furgoneta camper", "comprar camper segunda mano",
+        "camperizacion valencia", "wheely fog", "camper santorini alquiler", "rutas camper valencia",
+        "camper barata valencia", "alquiler autocaravana rafelbunyol", "viajar en camper 2 personas",
+        "furgoneta camperizada alquiler",
+    ]
+    rows = []
+    for _ in range(1000):
+        camp = np.random.choice(campañas)
+        term = np.random.choice(terminos)
+        fecha = fechas[np.random.randint(0, 90)]
+        if camp == "BRAND_WheelyFog":
+            impresiones = np.random.randint(100, 800)
+            ctr = np.random.uniform(0.15, 0.35)
+            cpc = np.random.uniform(0.10, 0.30)
+            cvr = np.random.uniform(0.05, 0.15)
+        else:
+            impresiones = np.random.randint(50, 500)
+            ctr = np.random.uniform(0.02, 0.12)
+            cpc = np.random.uniform(0.50, 2.10)
+            cvr = np.random.uniform(0.0, 0.04)
+        clics = int(impresiones * ctr)
+        coste = round(clics * cpc, 2)
+        conversiones = int(clics * cvr)
+        valor = round(conversiones * np.random.uniform(150, 600), 2) if conversiones > 0 else 0.0
+        rows.append({
+            "Fecha": fecha.strftime("%Y-%m-%d"), "Campaña": camp, "Término": term,
+            "Impresiones": impresiones, "Clics": clics, "Coste (€)": coste,
+            "Conversiones": conversiones, "Valor (€)": valor,
+        })
+    return pd.DataFrame(rows)
 
-  const semRaw = useMemo(buildSemDataset, []);
-  const recomendaciones = useMemo(() => buildRecommendations(CROSS, SEO_DATA), []);
 
-  // Filtro temporal SEM
-  const semData = useMemo(() => {
-    const limite = new Date(); limite.setDate(limite.getDate() - dias);
-    const lim = limite.toISOString().slice(0, 10);
-    return semRaw.filter((r) => r.Fecha >= lim);
-  }, [semRaw, dias]);
+@st.cache_data
+def load_seo_large_dataset():
+    """Datos SEO (Search Console simulado)."""
+    data = [
+        {"URL": "/rutas/costa-blanca-camper", "Palabra Clave Principal": "ruta costa blanca camper", "Tráfico Mensual": 4500, "Posición Media": 1.4, "Volumen Keyword": 12000, "Dificultad (KD)": 24, "Tasa Conversión": 0.018},
+        {"URL": "/guias/normativa-pernocta-comunidad-valenciana", "Palabra Clave Principal": "pernocta comunidad valenciana", "Tráfico Mensual": 3800, "Posición Media": 1.2, "Volumen Keyword": 8500, "Dificultad (KD)": 15, "Tasa Conversión": 0.006},
+        {"URL": "/modelos/diferencias-minivan-gran-volumen", "Palabra Clave Principal": "minivan vs gran volumen", "Tráfico Mensual": 2900, "Posición Media": 2.8, "Volumen Keyword": 4100, "Dificultad (KD)": 35, "Tasa Conversión": 0.029},
+        {"URL": "/consejos/viajar-con-perro-autocaravana", "Palabra Clave Principal": "viajar con perro camper", "Tráfico Mensual": 2100, "Posición Media": 3.2, "Volumen Keyword": 5600, "Dificultad (KD)": 42, "Tasa Conversión": 0.034},
+        {"URL": "/eventos/festivales-musica-espana-camper", "Palabra Clave Principal": "festivales en camper", "Tráfico Mensual": 1950, "Posición Media": 4.1, "Volumen Keyword": 9000, "Dificultad (KD)": 55, "Tasa Conversión": 0.042},
+        {"URL": "/rutas/escapadas-fin-de-semana-rafelbunyol", "Palabra Clave Principal": "rutas camper cerca de valencia", "Tráfico Mensual": 1400, "Posición Media": 1.5, "Volumen Keyword": 4200, "Dificultad (KD)": 12, "Tasa Conversión": 0.025},
+        {"URL": "/", "Palabra Clave Principal": "wheely fog", "Tráfico Mensual": 5000, "Posición Media": 1.0, "Volumen Keyword": 1500, "Dificultad (KD)": 5, "Tasa Conversión": 0.120},
+        {"URL": "/modelos/santorini-parejas", "Palabra Clave Principal": "camper santorini alquiler", "Tráfico Mensual": 1100, "Posición Media": 2.1, "Volumen Keyword": 2100, "Dificultad (KD)": 28, "Tasa Conversión": 0.058},
+        {"URL": "/blog/bricolaje-aislamiento-termico", "Palabra Clave Principal": "camperizacion valencia", "Tráfico Mensual": 850, "Posición Media": 14.5, "Volumen Keyword": 3300, "Dificultad (KD)": 65, "Tasa Conversión": 0.001},
+        {"URL": "/contacto", "Palabra Clave Principal": "telefono wheely fog", "Tráfico Mensual": 300, "Posición Media": 1.1, "Volumen Keyword": 400, "Dificultad (KD)": 2, "Tasa Conversión": 0.080},
+    ]
+    return pd.DataFrame(data)
 
-  /* ---- KPIs SEM ---- */
-  const semKpi = useMemo(() => {
-    const gasto = semData.reduce((a, r) => a + r.Coste, 0);
-    const retorno = semData.reduce((a, r) => a + r.Valor, 0);
-    const conv = semData.reduce((a, r) => a + r.Conversiones, 0);
-    return { gasto, retorno, conv, roas: gasto > 0 ? retorno / gasto : 0, cpa: conv > 0 ? gasto / conv : 0 };
-  }, [semData]);
 
-  /* ---- KPIs SEO (FIX: posición ponderada por tráfico) ---- */
-  const seoKpi = useMemo(() => {
-    const trafico = SEO_DATA.reduce((a, r) => a + r.trafico, 0);
-    const posPonderada = SEO_DATA.reduce((a, r) => a + r.pos * r.trafico, 0) / trafico;
-    const top3 = SEO_DATA.filter((r) => r.pos <= 3).length;
-    return { trafico, posPonderada, top3 };
-  }, []);
+@st.cache_data
+def load_content_proposals():
+    """Generador autonomo de ideas con justificacion analitica pre-redaccion."""
+    return pd.DataFrame([
+        {
+            "Título Propuesto": "Guía Definitiva: Viaje a Eurodisney en Furgoneta Camper",
+            "Keyword Objetivo": "eurodisney furgoneta camper", "Vol. Búsqueda (Mes)": 8500, "KD": 24,
+            "Intención": "Transaccional / Alquiler Familiar",
+            "Estrategia": "Aprovechar la inminente temporada de verano. Ideal para promociones cruzadas o sorteos.",
+            "Justificacion_Ventas": "Ataca un viaje de +1.300km. Los duenos de campers antiguas temen averias en trayectos largos internacionales. El texto se sesga hacia la 'tranquilidad' de alquilar vehiculos nuevos con seguro a todo riesgo, filtrando curiosos y atrayendo reservas familiares de alto ticket (7-10 dias).",
+        },
+        {
+            "Título Propuesto": "Escapadas de fin de semana desde Rafelbunyol: 5 destinos a menos de 100km",
+            "Keyword Objetivo": "rutas camper cerca de valencia", "Vol. Búsqueda (Mes)": 4200, "KD": 15,
+            "Intención": "Transaccional Local",
+            "Estrategia": "Filtra al cliente ideal. Remarcar los 100km/noche asegura rentabilidad mecanica.",
+            "Justificacion_Ventas": "Atrae trafico Bottom-of-Funnel (gente lista para salir este finde). El foco en rutas cortas excluye a nomadas con furgo propia y maximiza la tarifa base (100km/dia), reduciendo la depreciacion del motor.",
+        },
+        {
+            "Título Propuesto": "Dónde alquilar campers baratas en Valencia sin sorpresas en el seguro",
+            "Keyword Objetivo": "alquiler camper valencia barata", "Vol. Búsqueda (Mes)": 5600, "KD": 42,
+            "Intención": "Transaccional / Precio",
+            "Estrategia": "Atacar la transparencia frente a competidores o plataformas P2P.",
+            "Justificacion_Ventas": "Resuelve la friccion pre-compra: el miedo a franquicias ocultas. Un articulo transparente roba clientes a Yescapa o competidores locales y convierte trafico en alquileres cerrados.",
+        },
+    ])
 
-  return (
-    <div className="min-h-screen bg-gray-50 text-gray-900 flex flex-col md:flex-row">
-      <style>{`
-        .blog-container{background:#f8f9fa;padding:24px;border-radius:8px;border-left:4px solid ${C.seo};margin-top:12px;line-height:1.6}
-        .blog-container h3,.blog-container h4{font-weight:700;margin:14px 0 6px}
-        .blog-container ul{list-style:disc;padding-left:20px;margin:8px 0}
-        .img-suggestion{background:#e8f0fe;color:#1a73e8;padding:14px;border-radius:6px;font-family:monospace;margin:16px 0;border:1px dashed #1a73e8;font-size:.85rem}
-      `}</style>
 
-      {/* SIDEBAR */}
-      <aside className="md:w-72 w-full bg-white border-r border-gray-200 p-5 md:min-h-screen">
-        <div className="flex items-center gap-3 mb-1">
-          <div className="w-9 h-9 rounded-lg flex items-center justify-center text-white font-black" style={{ background: C.global }}>W</div>
-          <h1 className="text-xl font-extrabold">WheelyFog AI</h1>
+@st.cache_data
+def load_cross_channel_matrix():
+    """Matriz unificada para evaluar la interseccion de canales SEO y SEM."""
+    return pd.DataFrame([
+        {"Keyword": "alquiler camper valencia", "SEO Posición": 2.4, "SEO Tráfico": 3100, "SEM Gasto (€)": 1450.20, "SEM ROAS": 4.8, "Estado": "🔥 Rendimiento Líder", "Acción": "Mantener Inversión"},
+        {"Keyword": "camper santorini alquiler", "SEO Posición": 2.1, "SEO Tráfico": 1100, "SEM Gasto (€)": 810.50, "SEM ROAS": 6.5, "Estado": "🔥 Rendimiento Líder", "Acción": "Escalar Presupuesto"},
+        {"Keyword": "rutas camper cerca de valencia", "SEO Posición": 1.5, "SEO Tráfico": 1400, "SEM Gasto (€)": 285.10, "SEM ROAS": 1.2, "Estado": "🌱 Optimizar SEO", "Acción": "Reducir Puja SEM"},
+        {"Keyword": "comprar camper segunda mano", "SEO Posición": 48.0, "SEO Tráfico": 5, "SEM Gasto (€)": 910.40, "SEM ROAS": 0.0, "Estado": "💸 Fuga Absoluta", "Acción": "Negativizar Exacta"},
+        {"Keyword": "camperizacion valencia", "SEO Posición": 14.5, "SEO Tráfico": 80, "SEM Gasto (€)": 495.00, "SEM ROAS": 0.4, "Estado": "💸 Fuga Absoluta", "Acción": "Negativizar Frase"},
+        {"Keyword": "wheely fog", "SEO Posición": 1.0, "SEO Tráfico": 5000, "SEM Gasto (€)": 145.00, "SEM ROAS": 14.2, "Estado": "🔥 Rendimiento Líder", "Acción": "Proteger Marca"},
+        {"Keyword": "camper barata valencia", "SEO Posición": 9.2, "SEO Tráfico": 110, "SEM Gasto (€)": 1280.60, "SEM ROAS": 3.1, "Estado": "🌱 Optimizar SEO", "Acción": "Crear Landing SEO"},
+    ])
+
+
+def generate_ai_blog(keyword, title):
+    """Motor IA de redaccion. Sesga hacia el ALQUILER y excluye a propietarios."""
+    if "eurodisney" in keyword.lower():
+        return """
+        <h3>¿Te imaginas conocer el parque temático más famoso de Europa con tu casa sobre ruedas?</h3>
+        <p>En <strong>Wheely Fog</strong>, tu empresa de alquiler de furgonetas camper en Valencia, hemos diseñado un itinerario para que disfrutes de un viaje a Eurodisney lleno de magia. Tanto en familia como en pareja o con amigos, ofrecemos furgonetas camper de hasta 5 personas.</p>
+        <div class="img-suggestion">📸 <b>Prompt IA / Director de Arte:</b><br>"Fotografía hiperrealista. Una familia feliz saliendo de una furgoneta camper moderna y reluciente; de fondo desenfocado se intuye el castillo de Eurodisney. Luz de atardecer golden hour."<br><i>Alt text sugerido: Alquilar furgoneta camper en Valencia para ir a Eurodisney familiar.</i></div>
+        <h4>La mejor época y el factor "Tranquilidad"</h4>
+        <p>Recomendamos fechas entre primavera y verano. Pero hay un factor crucial: <strong>el vehículo</strong>. El trayecto España-París supera los 1.300 km solo de ida. Muchos descartan la idea por miedo a someter su vehículo propio o antiguo a semejante desgaste. Aquí entra la inteligencia: <strong>alquilar una camper de última generación con Wheely Fog</strong> garantiza cero kilómetros en tu coche, motores revisados de bajo consumo y seguro a todo riesgo europeo.</p>
+        <h4>Dormir en furgoneta camper en Eurodisney</h4>
+        <ul>
+            <li><strong>El parking del parque:</strong> zona para vaciar aguas, suministro eléctrico y baños.</li>
+            <li><strong>Camping Le Parc de Paris:</strong> a 20 min, con supermercado, lavandería y minigolf.</li>
+        </ul>
+        <div class="img-suggestion">📸 <b>Sugerencia de Fotografía Propia:</b><br>"Sube una foto real del interior del modelo 'Santorini' (5 plazas). Muestra la cama montada, bien iluminada, demostrando que es más cómodo que un hotel estándar."<br><i>Alt text sugerido: Interior cama furgoneta camper alquiler Wheely Fog Paris.</i></div>
+        <p>Reserva tus entradas con antelación y calcula peajes. El parque se visita bien en 3 días. Entra en nuestra web, selecciona fechas y reserva hoy tu camper en Wheely Fog.</p>
+        """
+    return f"""
+    <h3>Descubre {title}</h3>
+    <p>En <strong>Wheely Fog</strong> sabemos que las mejores aventuras a veces están a la vuelta de la esquina. No necesitas planificar expediciones de miles de kilómetros ni desgastar tu vehículo.</p>
+    <p>Nuestra filosofía es clara: transparencia y rentabilidad. Por eso el alquiler base incluye <strong>100 km por noche</strong>, la distancia matemáticamente perfecta para recoger tu vehículo en Rafelbunyol y plantarte en paraísos naturales sin pagar extra de kilometraje.</p>
+    <div class="img-suggestion">📸 <b>Prompt IA / Director de Arte:</b><br>"Furgoneta camper aparcada frente a la Albufera de Valencia al atardecer, dos sillas de camping desplegadas y dos tazas de café en una mesa plegable."<br><i>Alt text sugerido: Escapada camper barata desde Rafelbunyol Valencia.</i></div>
+    <p>Deja el mantenimiento, los seguros y los dolores de cabeza de tener un vehículo en propiedad para nosotros. <i>(El artículo continuaría detallando las 5 rutas locales).</i></p>
+    """
+
+
+# ==========================================
+# 3. MOTOR DE RECOMENDACIONES (NUEVO)
+#    Reglas de negocio de un gestor SEO/SEM. Mas adelante esta capa la consume
+#    un LLM (Claude tool-use) que razona sobre datos reales.
+# ==========================================
+INTENT_COMPRA = ["comprar", "compra", "segunda mano", "venta", "vender", "ocasion", "km0", "km 0"]
+INTENT_ALQUILER = ["alquiler", "alquilar", "rent", "fin de semana", "ruta", "escapada"]
+
+
+def detecta_intencion(kw):
+    k = kw.lower()
+    if any(t in k for t in INTENT_COMPRA):
+        return "compra"
+    if any(t in k for t in INTENT_ALQUILER):
+        return "alquiler"
+    return "informacional"
+
+
+def build_recommendations(df_cross, df_seo):
+    """Genera la lista priorizada de recomendaciones diarias/semanales."""
+    recs = []
+    rid = 0
+    for _, r in df_cross.iterrows():
+        kw = r["Keyword"]
+        intent = detecta_intencion(kw)
+        es_marca = "wheely fog" in kw.lower()
+        gasto = r["SEM Gasto (€)"]
+        roas = r["SEM ROAS"]
+        pos = r["SEO Posición"]
+
+        # R1 - CHOQUE DE INTENCION: keyword de compra consumiendo presupuesto de alquiler
+        if intent == "compra" and gasto > 0:
+            rid += 1
+            recs.append(dict(id=rid, sev="alta", canal="SEM", freq="diaria", kw=kw,
+                titulo="Choque de intención: negativizar término de COMPRA",
+                detalle=f'"{kw}" es intención de compra/venta, pero el negocio es alquiler. Quema {gasto:,.2f} €/mes con ROAS {roas:.1f}x. Ese tráfico rebota.',
+                accion=f'Añadir "{kw}" como negativa en concordancia de frase y exacta en todas las campañas de alquiler.',
+                impacto=f"Ahorro estimado: {gasto:,.2f} €/mes"))
+            continue
+
+        # R2 - FUGA: gasto alto y ROAS bajo (sin ser marca)
+        if not es_marca and roas < 1 and gasto > 300:
+            rid += 1
+            recs.append(dict(id=rid, sev="alta", canal="SEM", freq="diaria", kw=kw,
+                titulo="Fuga de presupuesto (ROAS < 1)",
+                detalle=f'"{kw}" gasta {gasto:,.2f} € y devuelve ROAS {roas:.1f}x. Pierde dinero en cada clic.',
+                accion="Pausar el grupo de anuncios o bajar puja agresivamente y revisar landing/coincidencia.",
+                impacto=f"Recuperas margen sobre {gasto:,.2f} €/mes"))
+            continue
+
+        # R3 - CANIBALIZACION: Top SEO solido + ROAS SEM flojo -> bajar puja (NO si es marca)
+        if not es_marca and pos <= 3 and roas < 2 and gasto > 100:
+            rid += 1
+            recs.append(dict(id=rid, sev="media", canal="Cross", freq="semanal", kw=kw,
+                titulo="Canibalización: ya eres Top 3 orgánico",
+                detalle=f'"{kw}" está en posición {pos:.1f} orgánica con ROAS SEM {roas:.1f}x. Pagas clics que ganarías gratis.',
+                accion="Reducir puja SEM un 40-60% y reinvertir en términos sin posición orgánica.",
+                impacto="Recortas gasto redundante manteniendo el clic orgánico"))
+            continue
+
+        # R4 - PROTECCION DE MARCA (corrige la incoherencia del original)
+        if es_marca:
+            rid += 1
+            recs.append(dict(id=rid, sev="info", canal="SEM", freq="semanal", kw=kw,
+                titulo="Proteger marca (NO pausar)",
+                detalle=f'"{kw}" tiene ROAS {roas:.1f}x y defenderla cuesta poco. Competidores y plataformas P2P (Yescapa, etc.) pujan tu marca.',
+                accion="Mantener campaña de marca activa. Defenderla es barato y evita robo de tráfico de marca.",
+                impacto="Blindas el tráfico de mayor conversión de la cuenta"))
+            continue
+
+        # R5 - OPORTUNIDAD SEO: paga SEM pero sin posicion organica decente
+        if pos > 8 and roas >= 1:
+            rid += 1
+            recs.append(dict(id=rid, sev="media", canal="SEO", freq="semanal", kw=kw,
+                titulo="Crear/optimizar contenido orgánico",
+                detalle=f'"{kw}" depende 100% de SEM (posición {pos:.1f}). Sin contenido, el coste nunca baja.',
+                accion="Crear landing optimizada para esta keyword y meterla en el calendario editorial.",
+                impacto="Reduce dependencia de puja a medio plazo"))
+
+    # R6 - SEO: URLs con buena posicion pero conversion bajisima (intencion mal alineada)
+    for _, s in df_seo.iterrows():
+        if s["Posición Media"] <= 5 and s["Tasa Conversión"] < 0.005 and s["Tráfico Mensual"] > 500:
+            rid += 1
+            recs.append(dict(id=rid, sev="media", canal="SEO", freq="semanal", kw=s["Palabra Clave Principal"],
+                titulo="Tráfico que no convierte (revisar intención de la URL)",
+                detalle=f'{s["URL"]} posiciona top ({s["Posición Media"]:.1f}) y trae {int(s["Tráfico Mensual"]):,} visitas/mes, pero convierte al {s["Tasa Conversión"]*100:.2f}%. Atrae informacional, no comprador.',
+                accion="Añadir CTA de reserva y bloques de oferta a la URL para capturar intención transaccional.",
+                impacto=f'Monetiza {int(s["Tráfico Mensual"]):,} visitas/mes ya existentes'))
+
+    orden = {"alta": 0, "media": 1, "info": 2}
+    return sorted(recs, key=lambda x: orden[x["sev"]])
+
+
+# Cargar dataframes a memoria
+df_sem_raw = load_sem_large_dataset()
+df_seo = load_seo_large_dataset()
+df_proposals = load_content_proposals()
+df_cross = load_cross_channel_matrix()
+
+# Estado de sesion (fix botones anidados + cola de acciones)
+if "articulos" not in st.session_state:
+    st.session_state.articulos = {}
+if "aprobados" not in st.session_state:
+    st.session_state.aprobados = {}
+if "rec_estado" not in st.session_state:
+    st.session_state.rec_estado = {}
+
+# ==========================================
+# 4. BARRA LATERAL Y FILTROS GLOBALES
+# ==========================================
+with st.sidebar:
+    st.markdown("## 🚐 WheelyFog AI")
+    st.markdown("Gestión integrada de canales digitales.")
+    st.divider()
+
+    hemisferio = st.radio(
+        "Módulos del Sistema:",
+        (
+            "🤖 Recomendaciones del Agente",
+            "🛰️ SEM (Performance & Subastas)",
+            "📝 SEO (Content Factory Orgánico)",
+            "🔑 Auditoría Cruzada (SEO vs SEM)",
+        ),
+    )
+    st.divider()
+
+    st.markdown("### 📅 Filtro Temporal (SEM)")
+    dias_filtro = st.slider("Rango de análisis (días previos):", 7, 90, 30, 1)
+    fecha_limite = datetime.today() - timedelta(days=dias_filtro)
+    df_sem = df_sem_raw[pd.to_datetime(df_sem_raw["Fecha"]) >= fecha_limite]
+
+    st.divider()
+    st.warning("🟡 API Google Ads: sin conectar")
+    st.warning("🟡 Search Console: sin conectar")
+    st.warning("🟡 GA4: sin conectar")
+
+
+# ==========================================
+# 5. MODULO: RECOMENDACIONES DEL AGENTE (NUEVO)
+# ==========================================
+if hemisferio == "🤖 Recomendaciones del Agente":
+    st.title("🤖 Recomendaciones del Agente")
+    st.markdown("Sugerencias **diarias y semanales** sobre lo que no está funcionando: choque de intención compra/alquiler, fugas de presupuesto, canibalización y oportunidades SEO. Cada acción requiere tu aprobación.")
+
+    recomendaciones = build_recommendations(df_cross, df_seo)
+    activas = [r for r in recomendaciones if r["id"] not in st.session_state.rec_estado]
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: render_metric("Recomendaciones activas", str(len(activas)), "cross")
+    with c2: render_metric("Prioridad alta", str(len([r for r in activas if r["sev"] == "alta"])), "sem", "Acción hoy", "down")
+    with c3: render_metric("Frecuencia diaria", str(len([r for r in recomendaciones if r["freq"] == "diaria"])), "cross")
+    with c4: render_metric("Frecuencia semanal", str(len([r for r in recomendaciones if r["freq"] == "semanal"])), "seo")
+
+    st.divider()
+
+    for r in recomendaciones:
+        estado = st.session_state.rec_estado.get(r["id"])
+        tag_class = {"alta": "tag-alta", "media": "tag-media", "info": "tag-info"}[r["sev"]]
+        tag_label = {"alta": "Prioridad alta", "media": "Prioridad media", "info": "Informativo"}[r["sev"]]
+        opacity = "opacity:0.55;" if estado else ""
+        st.markdown(f"""
+        <div class="rec-card" style="{opacity}">
+            <div style="margin-bottom:8px;">
+                <span class="tag {tag_class}">{tag_label}</span>
+                <span class="tag tag-canal">{r['canal']}</span>
+                <span class="tag tag-canal">↻ {r['freq']}</span>
+                <code style="color:#5f6368;font-size:.78rem;">{r['kw']}</code>
+            </div>
+            <div style="font-weight:700;font-size:1.05rem;">{r['titulo']}</div>
+            <div style="font-size:.9rem;color:#3c4043;margin-top:4px;">{r['detalle']}</div>
+            <div style="font-size:.9rem;margin-top:6px;"><b>Acción sugerida:</b> {r['accion']}</div>
+            <div style="font-size:.9rem;color:#137333;font-weight:600;margin-top:2px;">{r['impacto']}</div>
         </div>
-        <p className="text-sm text-gray-500 mb-5">Gestión integrada de canales digitales.</p>
+        """, unsafe_allow_html=True)
 
-        <nav className="space-y-1.5">
-          {[
-            ["recom", "🤖 Recomendaciones del Agente"],
-            ["sem", "🛰️ SEM (Performance & Subastas)"],
-            ["seo", "📝 SEO (Content Factory Orgánico)"],
-            ["cross", "🔑 Auditoría Cruzada (SEO vs SEM)"],
-          ].map(([k, label]) => (
-            <button key={k} onClick={() => setModulo(k)}
-              className={`w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium transition ${modulo === k ? "text-white" : "hover:bg-gray-100 text-gray-700"}`}
-              style={modulo === k ? { background: C.global } : {}}>
-              {label}
-            </button>
-          ))}
-        </nav>
+        if estado == "aplicada":
+            st.success("✓ Añadida a la cola de ejecución (pendiente de push a Google Ads).")
+        elif estado == "descartada":
+            cdesh1, cdesh2 = st.columns([3, 1])
+            cdesh1.caption("Descartada.")
+            if cdesh2.button("Deshacer", key=f"undo_{r['id']}"):
+                st.session_state.rec_estado.pop(r["id"], None)
+                st.rerun()
+        else:
+            b1, b2, _ = st.columns([2, 1, 4])
+            if b1.button("✓ Aplicar (a cola de aprobación)", key=f"apply_{r['id']}"):
+                st.session_state.rec_estado[r["id"]] = "aplicada"
+                st.rerun()
+            if b2.button("Descartar", key=f"dismiss_{r['id']}"):
+                st.session_state.rec_estado[r["id"]] = "descartada"
+                st.rerun()
 
-        {modulo === "sem" && (
-          <div className="mt-6">
-            <div className="text-sm font-semibold mb-2">📅 Filtro Temporal (SEM)</div>
-            <input type="range" min={7} max={90} value={dias} onChange={(e) => setDias(+e.target.value)} className="w-full" />
-            <div className="text-xs text-gray-500 mt-1">Últimos {dias} días</div>
-          </div>
-        )}
 
-        <div className="mt-6 space-y-2 text-sm">
-          <div className="px-3 py-2 rounded-lg bg-amber-50 text-amber-800 border border-amber-200">🟡 API Google Ads: sin conectar</div>
-          <div className="px-3 py-2 rounded-lg bg-amber-50 text-amber-800 border border-amber-200">🟡 Search Console: sin conectar</div>
-          <div className="px-3 py-2 rounded-lg bg-amber-50 text-amber-800 border border-amber-200">🟡 GA4: sin conectar</div>
-        </div>
-      </aside>
+# ==========================================
+# 6. MODULO SEM: PERFORMANCE Y BUSCADOR
+# ==========================================
+elif hemisferio == "🛰️ SEM (Performance & Subastas)":
+    st.title("🛰️ Director de Performance (SEM Ads)")
+    st.markdown(f"Auditoría del capital inyectado en subastas. Datos de los últimos **{dias_filtro} días**.")
 
-      {/* CONTENIDO */}
-      <main className="flex-1 p-6 md:p-8 max-w-[1200px]">
+    total_gasto = df_sem["Coste (€)"].sum()
+    total_retorno = df_sem["Valor (€)"].sum()
+    total_conv = df_sem["Conversiones"].sum()
+    roas_global = total_retorno / total_gasto if total_gasto > 0 else 0
+    cpa_global = total_gasto / total_conv if total_conv > 0 else 0
 
-        {/* ============ MÓDULO RECOMENDACIONES (NUEVO) ============ */}
-        {modulo === "recom" && (
-          <section>
-            <h2 className="text-2xl font-extrabold mb-1">🤖 Recomendaciones del Agente</h2>
-            <p className="text-gray-600 mb-5">Sugerencias <strong>diarias y semanales</strong> sobre lo que no está funcionando: choque de intención compra/alquiler, fugas de presupuesto, canibalización y oportunidades SEO. Cada acción requiere tu aprobación.</p>
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: render_metric("Gasto Total", f"{total_gasto:,.2f} €", "sem")
+    with c2: render_metric("Retorno Generado", f"{total_retorno:,.2f} €", "sem", "+14.2%", "up")
+    with c3: render_metric("ROAS de Cuenta", f"{roas_global:.2f}x", "sem")
+    with c4: render_metric("CPA Promedio", f"{cpa_global:.2f} €", "sem", "-2.10 €", "up")
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              <Metric type="cross" title="Recomendaciones activas" value={recomendaciones.filter((r) => !recState[r.id]).length} />
-              <Metric type="sem" title="Prioridad alta" value={recomendaciones.filter((r) => r.sev === "alta" && !recState[r.id]).length} delta="Acción hoy" deltaType="down" />
-              <Metric type="cross" title="Frecuencia diaria" value={recomendaciones.filter((r) => r.freq === "diaria").length} />
-              <Metric type="seo" title="Frecuencia semanal" value={recomendaciones.filter((r) => r.freq === "semanal").length} />
-            </div>
+    st.divider()
+    st.subheader("🔍 Motor de Búsqueda de Términos (Auditoría SEM)")
+    term_search = st.text_input("Introduce un término (Ej: valencia, segunda mano, santorini):")
+    if term_search:
+        df_f = df_sem[df_sem["Término"].str.contains(term_search, case=False, na=False)]
+        if not df_f.empty:
+            fg = df_f["Coste (€)"].sum(); fv = df_f["Valor (€)"].sum()
+            fr = fv / fg if fg > 0 else 0
+            st.info(f"Resultados aislados para: **'{term_search}'**")
+            s1, s2, s3 = st.columns(3)
+            s1.metric("Gasto Acumulado", f"{fg:,.2f} €")
+            s2.metric("Conversiones", int(df_f["Conversiones"].sum()))
+            s3.metric("ROAS Específico", f"{fr:.2f}x")
+            st.dataframe(df_f.sort_values("Fecha", ascending=False).head(50), use_container_width=True, hide_index=True)
+        else:
+            st.warning(f"No hay registros para '{term_search}' en los últimos {dias_filtro} días.")
 
-            <div className="space-y-4">
-              {recomendaciones.map((r) => {
-                const estado = recState[r.id];
-                return (
-                  <div key={r.id} className={`bg-white rounded-xl border p-5 shadow-sm ${estado === "aplicada" ? "border-green-300 opacity-70" : estado === "descartada" ? "border-gray-200 opacity-50" : "border-gray-200"}`}>
-                    <div className="flex flex-wrap items-center gap-2 mb-2">
-                      {sevBadge(r.sev)}
-                      <span className="px-2 py-0.5 rounded text-xs font-semibold bg-gray-100 text-gray-600">{r.canal}</span>
-                      <span className="px-2 py-0.5 rounded text-xs font-semibold bg-gray-100 text-gray-600">↻ {r.freq}</span>
-                      <code className="text-xs text-gray-500">{r.kw}</code>
-                    </div>
-                    <h3 className="font-bold text-lg">{r.titulo}</h3>
-                    <p className="text-sm text-gray-700 mt-1">{r.detalle}</p>
-                    <div className="mt-2 text-sm"><span className="font-semibold">Acción sugerida:</span> {r.accion}</div>
-                    <div className="text-sm text-green-700 font-semibold mt-1">{r.impacto}</div>
+    st.divider()
+    t1, t2 = st.tabs(["📈 Tendencia Inversión vs Retorno", "🍩 Distribución por Campaña"])
+    with t1:
+        df_trend = df_sem.groupby("Fecha").agg({"Coste (€)": "sum", "Valor (€)": "sum"}).reset_index()
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=df_trend["Fecha"], y=df_trend["Coste (€)"], name="Inversión (€)", marker_color=COLORS["sem"]))
+        fig.add_trace(go.Scatter(x=df_trend["Fecha"], y=df_trend["Valor (€)"], mode="lines+markers", name="Retorno (€)", line=dict(color=COLORS["global"], width=3)))
+        fig.update_layout(barmode="group", hovermode="x unified", title="Evolución Diaria del Margen")
+        st.plotly_chart(fig, use_container_width=True)
+    with t2:
+        df_camp = df_sem.groupby("Campaña").agg({"Coste (€)": "sum"}).reset_index()
+        fig2 = px.pie(df_camp, values="Coste (€)", names="Campaña", title="Distribución del Presupuesto por Campaña", hole=0.4)
+        st.plotly_chart(fig2, use_container_width=True)
 
-                    <div className="flex gap-2 mt-3">
-                      {!estado && (
-                        <>
-                          <button onClick={() => setRecState((s) => ({ ...s, [r.id]: "aplicada" }))}
-                            className="px-3 py-1.5 rounded-lg text-white text-sm font-semibold" style={{ background: C.seo }}>
-                            ✓ Aplicar (a cola de aprobación)
-                          </button>
-                          <button onClick={() => setRecState((s) => ({ ...s, [r.id]: "descartada" }))}
-                            className="px-3 py-1.5 rounded-lg text-sm font-semibold border border-gray-300 text-gray-600">
-                            Descartar
-                          </button>
-                        </>
-                      )}
-                      {estado === "aplicada" && <span className="text-sm text-green-700 font-semibold">✓ Añadida a la cola de ejecución (pendiente de push a Google Ads).</span>}
-                      {estado === "descartada" && <span className="text-sm text-gray-500">Descartada. <button onClick={() => setRecState((s) => ({ ...s, [r.id]: undefined }))} className="underline">Deshacer</button></span>}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        )}
 
-        {/* ============ MÓDULO SEM ============ */}
-        {modulo === "sem" && (
-          <section>
-            <h2 className="text-2xl font-extrabold mb-1">🛰️ Director de Performance (SEM Ads)</h2>
-            <p className="text-gray-600 mb-5">Auditoría del capital inyectado en subastas. Datos de los últimos <strong>{dias} días</strong>.</p>
+# ==========================================
+# 7. MODULO SEO: CONTENT FACTORY
+# ==========================================
+elif hemisferio == "📝 SEO (Content Factory Orgánico)":
+    st.title("📝 Director de Contenidos Autónomo (SEO)")
+    st.markdown("Análisis SERP, volumen y fábrica de contenidos automatizada.")
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              <Metric type="sem" title="Gasto Total" value={eur(semKpi.gasto)} />
-              <Metric type="sem" title="Retorno Generado" value={eur(semKpi.retorno)} delta="+14.2%" />
-              <Metric type="sem" title="ROAS de Cuenta" value={`${semKpi.roas.toFixed(2)}x`} />
-              <Metric type="sem" title="CPA Promedio" value={eur(semKpi.cpa)} delta="-2.10 €" />
-            </div>
+    trafico_total = df_seo["Tráfico Mensual"].sum()
+    # FIX: posicion media PONDERADA por trafico (no media aritmetica)
+    pos_ponderada = (df_seo["Posición Media"] * df_seo["Tráfico Mensual"]).sum() / trafico_total
+    top3 = int((df_seo["Posición Media"] <= 3).sum())
 
-            <h3 className="font-bold text-lg mb-2">🔍 Motor de Búsqueda de Términos</h3>
-            <input value={semSearch} onChange={(e) => setSemSearch(e.target.value)} placeholder="Ej: valencia, segunda mano, santorini..."
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 mb-4" />
-            {semSearch && (() => {
-              const f = semData.filter((r) => r.Término.toLowerCase().includes(semSearch.toLowerCase()));
-              if (!f.length) return <div className="p-3 bg-amber-50 text-amber-800 rounded-lg mb-4">Sin registros para "{semSearch}" en los últimos {dias} días.</div>;
-              const g = f.reduce((a, r) => a + r.Coste, 0), v = f.reduce((a, r) => a + r.Valor, 0), c = f.reduce((a, r) => a + r.Conversiones, 0);
-              return (
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
-                  <div className="grid grid-cols-3 gap-4 text-center">
-                    <div><div className="text-xs text-gray-500">Gasto Acumulado</div><div className="font-bold">{eur(g)}</div></div>
-                    <div><div className="text-xs text-gray-500">Conversiones</div><div className="font-bold">{c}</div></div>
-                    <div><div className="text-xs text-gray-500">ROAS Específico</div><div className="font-bold">{g > 0 ? (v / g).toFixed(2) : "0.00"}x</div></div>
-                  </div>
-                </div>
-              );
-            })()}
+    c1, c2, c3 = st.columns(3)
+    with c1: render_metric("Visitas Orgánicas/Mes", f"{trafico_total:,}", "seo", "+8.4%", "up")
+    with c2: render_metric("Posición Media (ponderada)", f"{pos_ponderada:.1f}", "seo", "-0.4", "up")
+    with c3: render_metric("Keywords en Top 3", str(top3), "seo")
 
-            <div className="grid md:grid-cols-2 gap-6">
-              <div className="bg-white rounded-xl border border-gray-200 p-4">
-                <h4 className="font-semibold mb-2">📈 Inversión vs Retorno</h4>
-                <ResponsiveContainer width="100%" height={280}>
-                  <ComposedChart data={Object.values(semData.reduce((acc, r) => {
-                    acc[r.Fecha] = acc[r.Fecha] || { Fecha: r.Fecha, Coste: 0, Valor: 0 };
-                    acc[r.Fecha].Coste += r.Coste; acc[r.Fecha].Valor += r.Valor; return acc;
-                  }, {})).sort((a, b) => (a.Fecha < b.Fecha ? -1 : 1))}>
-                    <CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="Fecha" hide /><YAxis /><Tooltip /><Legend />
-                    <Bar dataKey="Coste" name="Inversión (€)" fill={C.sem} />
-                    <Line dataKey="Valor" name="Retorno (€)" stroke={C.global} strokeWidth={3} dot={false} />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="bg-white rounded-xl border border-gray-200 p-4">
-                <h4 className="font-semibold mb-2">🍩 Distribución por Campaña</h4>
-                <ResponsiveContainer width="100%" height={280}>
-                  <PieChart>
-                    <Pie data={Object.values(semData.reduce((acc, r) => {
-                      acc[r.Campaña] = acc[r.Campaña] || { name: r.Campaña, value: 0 };
-                      acc[r.Campaña].value += r.Coste; return acc;
-                    }, {}))} dataKey="value" nameKey="name" innerRadius={55} outerRadius={90}>
-                      {[C.sem, C.global, C.seo, C.cross].map((col, i) => <Cell key={i} fill={col} />)}
-                    </Pie>
-                    <Tooltip formatter={(v) => eur(v)} /><Legend />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          </section>
-        )}
+    st.divider()
+    st.subheader("🔍 Buscador de Volumen Orgánico y URLs")
+    seo_search = st.text_input("Ej: ruta, camper, pernocta...")
+    if seo_search:
+        mask = df_seo["Palabra Clave Principal"].str.contains(seo_search, case=False, na=False) | df_seo["URL"].str.contains(seo_search, case=False, na=False)
+        df_sf = df_seo[mask]
+        if not df_sf.empty:
+            st.dataframe(df_sf.sort_values("Tráfico Mensual", ascending=False), use_container_width=True, hide_index=True)
+        else:
+            st.warning("Sin coincidencias. ¡Oportunidad para crear contenido nuevo!")
 
-        {/* ============ MÓDULO SEO ============ */}
-        {modulo === "seo" && (
-          <section>
-            <h2 className="text-2xl font-extrabold mb-1">📝 Director de Contenidos Autónomo (SEO)</h2>
-            <p className="text-gray-600 mb-5">Análisis SERP, volumen y fábrica de contenidos automatizada.</p>
+    st.divider()
+    st.subheader("🏭 Fábrica de Contenidos IA")
+    for i, prop in df_proposals.iterrows():
+        with st.container(border=True):
+            st.markdown(f"#### 📌 {prop['Título Propuesto']}")
+            kd = prop["KD"]
+            kd_label = "🟢 Fácil" if kd < 30 else ("🟡 Media" if kd < 60 else "🔴 Difícil")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Volumen", f"{prop['Vol. Búsqueda (Mes)']:,}")
+            m2.metric("Dificultad", f"{kd}/100", kd_label)
+            m3.metric("Intención", prop["Intención"])
+            st.info(f"💡 **Justificación de ventas:** {prop['Justificacion_Ventas']}")
 
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
-              <Metric type="seo" title="Visitas Orgánicas/Mes" value={num(seoKpi.trafico)} delta="+8.4%" />
-              <Metric type="seo" title="Posición Media (ponderada)" value={seoKpi.posPonderada.toFixed(1)} delta="-0.4" />
-              <Metric type="seo" title="Keywords en Top 3" value={seoKpi.top3} />
-            </div>
+            # FIX botones anidados: generacion via session_state (no boton dentro de boton)
+            if not st.session_state.articulos.get(i):
+                if st.button("🧠 Generar Artículo y Prompts Visuales", key=f"gen_{i}"):
+                    with st.spinner("La IA está redactando y sesgando el contenido..."):
+                        st.session_state.articulos[i] = generate_ai_blog(prop["Keyword Objetivo"], prop["Título Propuesto"])
+                    st.rerun()
+            else:
+                st.markdown(f'<div class="blog-container">{st.session_state.articulos[i]}</div>', unsafe_allow_html=True)
+                bc1, bc2 = st.columns([2, 1])
+                if not st.session_state.aprobados.get(i):
+                    if bc1.button("📤 Aprobar y Enviar a Web", key=f"appr_{i}"):
+                        st.session_state.aprobados[i] = True
+                        st.rerun()
+                else:
+                    bc1.success("✓ Draft enviado a la cola de publicación.")
+                if bc2.button("Descartar", key=f"disc_{i}"):
+                    st.session_state.articulos[i] = None
+                    st.session_state.aprobados[i] = False
+                    st.rerun()
 
-            <h3 className="font-bold text-lg mb-2">🔍 Buscador de Volumen Orgánico y URLs</h3>
-            <input value={seoSearch} onChange={(e) => setSeoSearch(e.target.value)} placeholder="Ej: ruta, camper, pernocta..."
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 mb-3" />
-            {seoSearch && (() => {
-              const f = SEO_DATA.filter((r) => r.kw.toLowerCase().includes(seoSearch.toLowerCase()) || r.URL.toLowerCase().includes(seoSearch.toLowerCase()));
-              if (!f.length) return <div className="p-3 bg-amber-50 text-amber-800 rounded-lg mb-4">Sin coincidencias. ¡Oportunidad para crear contenido nuevo!</div>;
-              return (
-                <div className="overflow-x-auto mb-4 bg-white rounded-xl border border-gray-200">
-                  <table className="w-full text-sm">
-                    <thead className="bg-gray-50 text-gray-500 text-left"><tr>
-                      <th className="p-2">URL</th><th className="p-2">Keyword</th><th className="p-2">Tráfico</th><th className="p-2">Pos.</th><th className="p-2">Vol.</th><th className="p-2">KD</th><th className="p-2">CVR</th>
-                    </tr></thead>
-                    <tbody>{f.sort((a, b) => b.trafico - a.trafico).map((r, i) => (
-                      <tr key={i} className="border-t border-gray-100"><td className="p-2">{r.URL}</td><td className="p-2">{r.kw}</td><td className="p-2">{num(r.trafico)}</td><td className="p-2">{r.pos.toFixed(1)}</td><td className="p-2">{num(r.vol)}</td><td className="p-2">{r.kd}</td><td className="p-2">{(r.cvr * 100).toFixed(2)}%</td></tr>
-                    ))}</tbody>
-                  </table>
-                </div>
-              );
-            })()}
+    st.divider()
+    st.subheader("📈 Mapa de Competitividad SEO")
+    fig_seo = px.scatter(df_seo, x="Dificultad (KD)", y="Tráfico Mensual", size="Volumen Keyword",
+                         color="Tasa Conversión", hover_name="Palabra Clave Principal",
+                         color_continuous_scale="Greens", size_max=50,
+                         title="Burbujas grandes a la izquierda (baja dificultad) = oportunidades")
+    st.plotly_chart(fig_seo, use_container_width=True)
 
-            <h3 className="font-bold text-lg mb-3 mt-6">🏭 Fábrica de Contenidos IA</h3>
-            <div className="space-y-4">
-              {PROPOSALS.map((p, i) => {
-                const kdColor = p.kd < 30 ? "🟢 Fácil" : p.kd < 60 ? "🟡 Media" : "🔴 Difícil";
-                return (
-                  <div key={i} className="bg-white rounded-xl border border-gray-200 p-5">
-                    <h4 className="font-bold">📌 {p.titulo}</h4>
-                    <div className="grid grid-cols-3 gap-3 my-3 text-sm">
-                      <div><div className="text-gray-500 text-xs">Volumen</div><div className="font-semibold">{num(p.vol)}</div></div>
-                      <div><div className="text-gray-500 text-xs">Dificultad</div><div className="font-semibold">{p.kd}/100 ({kdColor})</div></div>
-                      <div><div className="text-gray-500 text-xs">Intención</div><div className="font-semibold">{p.intencion}</div></div>
-                    </div>
-                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm mb-3">💡 <strong>Justificación:</strong> {p.justificacion}</div>
 
-                    {/* FIX botones anidados: generación controlada por estado */}
-                    {!articulos[i] ? (
-                      <button onClick={() => setArticulos((s) => ({ ...s, [i]: generateAiBlog(p.kw, p.titulo) }))}
-                        className="px-3 py-1.5 rounded-lg text-white text-sm font-semibold" style={{ background: C.seo }}>
-                        🧠 Generar Artículo y Prompts Visuales
-                      </button>
-                    ) : (
-                      <>
-                        <div className="blog-container" dangerouslySetInnerHTML={{ __html: articulos[i] }} />
-                        <div className="flex gap-2 mt-3">
-                          {!aprobados[i] ? (
-                            <button onClick={() => setAprobados((s) => ({ ...s, [i]: true }))}
-                              className="px-3 py-1.5 rounded-lg text-white text-sm font-semibold" style={{ background: C.global }}>
-                              📤 Aprobar y Enviar a Web
-                            </button>
-                          ) : (
-                            <span className="text-sm text-green-700 font-semibold">✓ Draft enviado a la cola de publicación.</span>
-                          )}
-                          <button onClick={() => { setArticulos((s) => ({ ...s, [i]: undefined })); setAprobados((s) => ({ ...s, [i]: false })); }}
-                            className="px-3 py-1.5 rounded-lg text-sm font-semibold border border-gray-300 text-gray-600">Descartar</button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+# ==========================================
+# 8. MODULO: AUDITORIA CRUZADA
+# ==========================================
+elif hemisferio == "🔑 Auditoría Cruzada (SEO vs SEM)":
+    st.title("🔑 Matriz de Auditoría Cross-Channel")
+    st.markdown("Identifica canibalización, fugas de presupuesto y rentabilidad neta por keyword.")
 
-            <h3 className="font-bold text-lg mb-2 mt-8">📈 Mapa de Competitividad SEO</h3>
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <ResponsiveContainer width="100%" height={360}>
-                <ScatterChart margin={{ top: 10, right: 20, bottom: 20, left: 10 }}>
-                  <CartesianGrid /><XAxis type="number" dataKey="kd" name="Dificultad" label={{ value: "Dificultad (KD)", position: "bottom" }} />
-                  <YAxis type="number" dataKey="trafico" name="Tráfico" /><ZAxis type="number" dataKey="vol" range={[60, 600]} />
-                  <Tooltip cursor={{ strokeDasharray: "3 3" }} formatter={(v, n) => [num(v), n]} />
-                  <Scatter data={SEO_DATA} fill={C.seo} />
-                </ScatterChart>
-              </ResponsiveContainer>
-              <p className="text-xs text-gray-500 mt-1">Burbujas grandes (mucho volumen) a la izquierda (baja dificultad) = oportunidades.</p>
-            </div>
-          </section>
-        )}
+    lider = int(df_cross["Estado"].str.contains("Líder").sum())
+    fuga = int(df_cross["Estado"].str.contains("Fuga").sum())
+    optim = int(df_cross["Estado"].str.contains("Optimizar").sum())
+    c1, c2, c3 = st.columns(3)
+    with c1: render_metric("Keywords Eficientes", str(lider), "cross")
+    with c2: render_metric("Fugas Críticas", str(fuga), "cross", "Requiere Acción", "down")
+    with c3: render_metric("Oportunidades SEO", str(optim), "cross")
 
-        {/* ============ MÓDULO AUDITORÍA CRUZADA ============ */}
-        {modulo === "cross" && (
-          <section>
-            <h2 className="text-2xl font-extrabold mb-1">🔑 Matriz de Auditoría Cross-Channel</h2>
-            <p className="text-gray-600 mb-5">Identifica canibalización, fugas de presupuesto y rentabilidad neta por keyword.</p>
+    st.error("🚨 **Fuga de caja:** términos de compra ('comprar camper segunda mano') consumen +1.400 €/mes en SEM con ROAS 0.0x. Al no dedicarte a la venta, ese tráfico rebota. Negativizar términos de compra en concordancia amplia y de frase.")
 
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-5">
-              <Metric type="cross" title="Keywords Eficientes" value={CROSS.filter((r) => r.estado.includes("Líder")).length} />
-              <Metric type="cross" title="Fugas Críticas" value={CROSS.filter((r) => r.estado.includes("Fuga")).length} delta="Requiere Acción" deltaType="down" />
-              <Metric type="cross" title="Oportunidades SEO" value={CROSS.filter((r) => r.estado.includes("Optimizar")).length} />
-            </div>
+    st.divider()
+    st.subheader("📊 Matriz Estratégica")
+    cross_search = st.text_input("Filtrar: alquiler, comprar, santorini...")
+    df_cf = df_cross[df_cross["Keyword"].str.contains(cross_search, case=False, na=False)] if cross_search else df_cross
+    st.dataframe(df_cf, use_container_width=True, hide_index=True)
 
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-5 text-sm text-red-800">
-              <strong>🚨 Fuga de caja:</strong> términos de compra ("comprar camper segunda mano") consumen +1.400€/mes en SEM con ROAS 0.0x. Al no dedicarte a la venta, ese tráfico rebota. Negativizar términos de compra en concordancia amplia y de frase.
-            </div>
+    st.divider()
+    st.subheader("📈 Cuadrante: Posición SEO vs ROAS")
+    st.caption("Eje X invertido: la izquierda es el Top 1 de Google.")
+    fig_q = px.scatter(df_cross, x="SEO Posición", y="SEM ROAS", size="SEM Gasto (€)",
+                       color="Estado", hover_name="Keyword", size_max=55,
+                       color_discrete_map={"🔥 Rendimiento Líder": COLORS["seo"], "🌱 Optimizar SEO": COLORS["cross"], "💸 Fuga Absoluta": COLORS["sem"]})
+    fig_q.update_xaxes(autorange="reversed", title="Posición en Google (← mejor)")
+    fig_q.update_yaxes(title="ROAS SEM")
+    st.plotly_chart(fig_q, use_container_width=True)
 
-            <h3 className="font-bold text-lg mb-2">📊 Matriz Estratégica</h3>
-            <input value={crossSearch} onChange={(e) => setCrossSearch(e.target.value)} placeholder="Filtrar: alquiler, comprar, santorini..."
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 mb-3" />
-            <div className="overflow-x-auto bg-white rounded-xl border border-gray-200 mb-6">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-gray-500 text-left"><tr>
-                  <th className="p-2">Keyword</th><th className="p-2">Pos. SEO</th><th className="p-2">Tráfico</th><th className="p-2">Gasto SEM</th><th className="p-2">ROAS</th><th className="p-2">Estado</th><th className="p-2">Acción</th>
-                </tr></thead>
-                <tbody>{CROSS.filter((r) => r.kw.toLowerCase().includes(crossSearch.toLowerCase())).map((r, i) => (
-                  <tr key={i} className="border-t border-gray-100"><td className="p-2 font-medium">{r.kw}</td><td className="p-2">{r.pos.toFixed(1)}</td><td className="p-2">{num(r.trafico)}</td><td className="p-2">{eur(r.gasto)}</td><td className="p-2">{r.roas.toFixed(1)}x</td><td className="p-2">{r.estado}</td><td className="p-2">{r.accion}</td></tr>
-                ))}</tbody>
-              </table>
-            </div>
-
-            <h3 className="font-bold text-lg mb-2">📈 Cuadrante: Posición SEO vs ROAS</h3>
-            <p className="text-sm text-gray-600 mb-2">Eje X invertido: la izquierda es el Top 1 de Google.</p>
-            <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6">
-              <ResponsiveContainer width="100%" height={420}>
-                <ScatterChart margin={{ top: 20, right: 30, bottom: 20, left: 10 }}>
-                  <CartesianGrid />
-                  <XAxis type="number" dataKey="pos" name="Posición SEO" reversed domain={[0, "dataMax"]} label={{ value: "Posición en Google (← mejor)", position: "bottom" }} />
-                  <YAxis type="number" dataKey="roas" name="ROAS" label={{ value: "ROAS SEM", angle: -90, position: "left" }} />
-                  <ZAxis type="number" dataKey="gasto" range={[80, 700]} />
-                  <Tooltip cursor={{ strokeDasharray: "3 3" }} formatter={(v, n) => [n === "gasto" ? eur(v) : v, n]} />
-                  {["🔥 Rendimiento Líder", "🌱 Optimizar SEO", "💸 Fuga Absoluta"].map((est) => (
-                    <Scatter key={est} name={est} data={CROSS.filter((r) => r.estado === est)}
-                      fill={est.includes("Líder") ? C.seo : est.includes("Optimizar") ? C.cross : C.sem} />
-                  ))}
-                  <Legend />
-                </ScatterChart>
-              </ResponsiveContainer>
-            </div>
-
-            <h3 className="font-bold text-lg mb-2">⚡ Ejecución (a cola de aprobación)</h3>
-            <p className="text-sm text-gray-600">Las acciones rápidas viven en el módulo <button onClick={() => setModulo("recom")} className="underline font-semibold">🤖 Recomendaciones</button>, donde cada cambio se aprueba antes de tocar Google Ads (humano en el bucle).</p>
-          </section>
-        )}
-      </main>
-    </div>
-  );
-}
+    st.info("Las acciones rápidas viven en el módulo **🤖 Recomendaciones del Agente**, donde cada cambio se aprueba antes de tocar Google Ads (humano en el bucle).")
