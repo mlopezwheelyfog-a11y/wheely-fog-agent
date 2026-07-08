@@ -400,34 +400,44 @@ def parse_gsc_upload(uploaded_file):
 
 
 # --- Clasificador de VERTICALES de negocio (ALQUILER/VENTA/CAMPERIZACION/MARCA) ---
-# Wheely Fog opera ALQUILER y VENTA como negocios PARALELOS e independientes.
-# El clasificador NO usa listas planas (causaban mezcla): puntúa señales de
-# intención y gana la señal transaccional DOMINANTE. Regla de oro: el verbo de
-# acción manda. "alquiler ... barata" es ALQUILER (el usuario quiere alquilar
-# barato), no VENTA, aunque contenga "barata".
+# Modelo REAL de wheelyfog.com (verificado en la web):
+#   ALQUILER (/campers): core. Desde 3 noches, desde Valencia.
+#   VENTA (/venta): campers EX-FLOTA con historial completo y kilometraje real
+#       (ocasión/seminuevo premium, NO concesionario nuevo). Precios 35k-80k.
+#       Gancho propio: "historial completo + puedes alquilarla antes de comprar
+#       y te descontamos el alquiler". => "segunda mano", "km", "ocasión",
+#       "seminueva" son tráfico VÁLIDO y cualificado de venta, NO tóxico.
+#   CAMPERIZACION (/camperizacion): PRÓXIMAMENTE. Aún no activa; solo lista de
+#       espera. Se captan leads, no se compite a full por ahora.
+# El clasificador puntúa señales de intención; el verbo de acción manda.
 FLOTA = ["santorini", "kioto", "bibury", "formentera", "nueva york", "arizona",
          "kenia", "gamla stan", "la cabaña", "la cabana", "compact sky",
          "red compact", "blue compact", "grey compact", "white compact",
-         "vancubic", "sa talaia"]
+         "vancubic", "sa talaia", "tromso", "tromsø"]
 
 # Señales de ACCIÓN (verbo de intención) — pesan más que los adjetivos
 SIG_ALQUILER = ["alquiler", "alquilar", "alquilo", "alquila", "rent", "renting",
                 "de alquiler", "en alquiler"]
 SIG_VENTA = ["comprar", "compra", "venta", "vender", "en venta", "adquirir",
-             "concesionario", "financiacion", "financiación", "financiar",
-             "km0", "km 0", "a la venta"]
+             "a la venta", "me interesa comprar",
+             # ocasión/seminuevo: en Wheely Fog SON venta legítima (ex-flota)
+             "segunda mano", "seminueva", "seminuevo", "ocasion", "ocasión",
+             "de ocasion", "km0", "km 0", "kilometraje", "con historial"]
 # Señales de CONTEXTO (refuerzan, no deciden solas)
 CTX_ALQUILER = ["fin de semana", "finde", "escapada", "escapadas", "ruta", "rutas",
                 "vacaciones", "viaje", "viajar", "noches", "por dias", "por días",
                 "una semana", "puente", "pernocta", "dormir"]
-CTX_VENTA = ["precio camper", "precio furgoneta", "cuanto cuesta comprar",
-             "camper nueva", "furgoneta nueva", "camper a estrenar",
-             "camper en venta", "furgoneta en venta"]
-TERMS_TOXICOS_VENTA = ["segunda mano", "particular", "ocasion", "ocasión",
-                       "de segunda", "reacondicionad"]
+CTX_VENTA = ["precio camper", "precio furgoneta", "cuanto cuesta una camper",
+             "camper en venta", "furgoneta en venta", "camper de ocasion",
+             "financiacion", "financiación", "financiar", "iva incluido"]
+# Camperización (aún "Próximamente" en la web)
 TERMS_CAMPERIZACION = ["camperizar", "camperizacion", "camperización", "homologar",
                        "homologacion", "homologación", "mueble camper", "kit camper",
-                       "aislamiento furgoneta", "transformar furgoneta", "camperizada diy"]
+                       "aislamiento furgoneta", "transformar furgoneta", "camperizar mi"]
+# Realmente contraproducente para una marca premium: SOLO "barato/a" en intención
+# de compra (erosiona posicionamiento; su flota de venta es premium con historial).
+TERMS_EROSION_PREMIUM = ["barato", "barata", "baratas", "baratos", "chollo",
+                         "tirado de precio", "regalada"]
 
 
 def _score_intent(k):
@@ -467,13 +477,19 @@ def clasifica_vertical(kw):
     return "INFORMACIONAL"
 
 
-def es_toxico_para_venta(kw):
-    """Tóxico SOLO si es intención de VENTA con señal de segunda mano/particular.
-    'alquiler barato' NO es tóxico (es alquiler legítimo)."""
+def erosiona_premium(kw):
+    """True si es intención de compra con 'barato/chollo': choca con el
+    posicionamiento premium de la flota de venta (con historial, 35k-80k).
+    NO aplica a alquiler: 'alquiler barato' es una búsqueda legítima."""
     k = str(kw).lower()
     if clasifica_vertical(kw) != "VENTA":
         return False
-    return any(t in k for t in TERMS_TOXICOS_VENTA)
+    return any(t in k for t in TERMS_EROSION_PREMIUM)
+
+
+# Compatibilidad con el resto del código (antes se llamaba es_toxico_para_venta)
+def es_toxico_para_venta(kw):
+    return erosiona_premium(kw)
 
 
 VERT_COLORS = {"ALQUILER": "#1a73e8", "VENTA": "#9334e6", "CAMPERIZACION": "#e37400",
@@ -504,35 +520,39 @@ def build_gsc_recommendations(df_q):
             "Mantener campaña de marca en Ads y vigilar SERP de Santorini, Kioto, Formentera, etc.",
             "Blindas el tráfico de mayor conversión")
 
-    tox = df[(df["Vertical"] == "VENTA") & df["termino"].apply(es_toxico_para_venta)]
-    for _, r in tox.sort_values("Impresiones", ascending=False).head(8).iterrows():
-        add("alta", "SEM", "diaria", r["termino"], "VENTA",
-            "Término tóxico para VENTA de flota premium",
-            f'"{r["termino"]}" — {int(r["Impresiones"]):,} impr., {int(r["Clics"])} clics, pos {r["Posicion"]:.0f}. '
-            "Busca segunda mano/precio bajo: no cualifica para flota nueva.",
-            "Negativizar en FRASE en campañas de VENTA.",
-            "Evitas leads de venta no cualificados")
+    # ---- VENTA: campers EX-FLOTA con historial (ocasión premium) ----
+    # "barato/chollo" en compra erosiona el posicionamiento premium: se avisa,
+    # NO se negativiza a ciegas (podría ser demanda real mal encajada).
+    eros = df[(df["Vertical"] == "VENTA") & df["termino"].apply(erosiona_premium)]
+    for _, r in eros.sort_values("Impresiones", ascending=False).head(5).iterrows():
+        add("media", "SEO+SEM", "semanal", r["termino"], "VENTA",
+            "Búsqueda de 'barato' choca con tu venta premium (con historial)",
+            f'"{r["termino"]}" — {int(r["Impresiones"]):,} impr., pos {r["Posicion"]:.0f}. '
+            "Tu flota de venta es ocasión premium con historial (35k-80k€), no saldo.",
+            "En SEM, matizar con negativa 'gratis/saldo' pero NO 'ocasión/km'. En orgánico, "
+            "reencuadrar el copy hacia 'relación calidad-historial-precio', no hacia 'lo más barato'.",
+            "Filtras cazagangas sin perder demanda real de compra")
 
-    # VENTA legítima = vertical de negocio activa (Wheely Fog vende flota, no solo alquila)
-    venta_ok = df[(df["Vertical"] == "VENTA") & ~df["termino"].apply(es_toxico_para_venta)]
+    # VENTA legítima (ocasión, km, seminueva, comprar...) = vertical activa y cualificada
+    venta_ok = df[(df["Vertical"] == "VENTA") & ~df["termino"].apply(erosiona_premium)]
     if not venta_ok.empty:
         add("info", "SEO+SEM", "semanal", "vertical venta", "VENTA",
-            "Vertical VENTA activa: captar leads de compra de flota",
+            "Vertical VENTA activa: campers ex-flota con historial",
             f"{len(venta_ok)} términos de compra reales ({int(venta_ok['Impresiones'].sum()):,} impr., "
-            f"{int(venta_ok['Clics'].sum()):,} clics). Ticket alto y ciclo de decisión largo: "
-            "el lead cualificado vale más que un clic de alquiler.",
-            "Mantener campañas de VENTA separadas de ALQUILER (presupuesto y anuncios propios). "
-            "KPI = lead cualificado de compra, no reserva.",
-            "Monetiza la demanda de compra que ya te encuentra")
-    # Oportunidad SEO por término de venta con demanda pero mala posición
-    for _, r in venta_ok[(venta_ok["Posicion"] > 8) & (venta_ok["Impresiones"] >= 80)].sort_values("Impresiones", ascending=False).head(6).iterrows():
+            f"{int(venta_ok['Clics'].sum()):,} clics). Vendes tu propia flota con historial completo y "
+            "opción de 'pruébala alquilando antes de comprar y te descontamos el alquiler'.",
+            "Campañas de VENTA separadas de ALQUILER. Copy con los ganchos REALES: historial de "
+            "mantenimiento, prueba-antes-de-comprar, IVA incluido. KPI = lead de compra, no reserva.",
+            "Monetiza la rotación de flota con el argumento diferencial que ya tienes")
+    # Oportunidad SEO de venta (ocasión/km con demanda pero mala posición)
+    for _, r in venta_ok[(venta_ok["Posicion"] > 8) & (venta_ok["Impresiones"] >= 60)].sort_values("Impresiones", ascending=False).head(5).iterrows():
         add("media", "SEO", "semanal", r["termino"], "VENTA",
-            "Oportunidad SEO en VENTA (demanda de compra sin posición)",
-            f'"{r["termino"]}" — {int(r["Impresiones"]):,} impr. pero pos {r["Posicion"]:.0f}: '
-            "apareces pero casi nadie te ve. La compra madura con contenido.",
-            "Crear/optimizar landing de venta de flota para esta keyword (ficha, precio orientativo, "
-            "financiación, CTA de contacto). No mezclar con páginas de alquiler.",
-            "Pipeline de leads de compra de alto ticket sin depender de puja")
+            "Oportunidad SEO en VENTA (demanda de ocasión sin posición)",
+            f'"{r["termino"]}" — {int(r["Impresiones"]):,} impr. pero pos {r["Posicion"]:.0f}. '
+            "Compra de camper de ocasión: ciclo largo, el contenido con historial madura el lead.",
+            "Optimizar /venta y fichas por vehículo (marca, año, km, historial, 'pruébala antes de "
+            "comprar'). Enlazar desde el blog. No mezclar con /campers de alquiler.",
+            "Pipeline de leads de compra sin depender de puja")
 
     # ---- ALQUILER: quick-wins tipo agente Google ----
     # CTR medio esperado por posición (curva estándar aproximada). Sirve para
@@ -594,6 +614,17 @@ def build_gsc_recommendations(df_q):
             f"Reescribir SOLO el title y la meta description con un gancho ({GANCHOS[0]} / {GANCHOS[2]}). "
             "Cero cambios de contenido, efecto inmediato.",
             "Más clics con el mismo ranking, esfuerzo mínimo")
+
+    # ---- CAMPERIZACION: aún "Próximamente" (lista de espera, no full competición) ----
+    campz = df[df["Vertical"] == "CAMPERIZACION"]
+    if not campz.empty:
+        add("info", "SEO", "semanal", "vertical camperizacion", "CAMPERIZACION",
+            "Camperización en pre-lanzamiento: capta lista de espera, no gastes en puja",
+            f"{len(campz)} términos de camperización ({int(campz['Impresiones'].sum()):,} impr.). "
+            "El servicio está 'Próximamente': aún no conviene competir a full en SEM.",
+            "Mantener la landing /camperizacion captando leads (WhatsApp/email de lista de espera) y "
+            "trabajar SEO informativo para llegar posicionado al lanzamiento. Puja SEM mínima o nula por ahora.",
+            "Llegas al lanzamiento con demanda y posición ya calentadas")
 
     add("info", "Sistema", "semanal", "-", "INFORMACIONAL",
         "Valor de conversión real: requiere GA4 + Google Ads",
