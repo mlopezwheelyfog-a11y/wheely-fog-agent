@@ -184,15 +184,39 @@ def load_cross_channel_matrix():
     ])
 
 
+# Ficha REAL de Wheely Fog (verificada en wheelyfog.com) para el Content Factory.
+# El contenido generado debe ceñirse SOLO a estos datos para no inventar.
+WF_FACTS = {
+    "empresa": "Wheely Fog (Gesibris SL)",
+    "base": "Rafelbunyol, Valencia (Carrer del Mar 9). A 5 min a pie del metro Línea 3.",
+    "core": "alquiler de furgonetas camper premium desde Valencia",
+    "verticales": "alquiler, venta de campers ex-flota con historial, y camperización (próximamente)",
+    "entrega": "entrega y devolución de llaves 24/7, los 365 días del año",
+    "km_base": "100 km/noche incluidos (ampliable a ilimitado con el seguro Extra o pack de +15€/día)",
+    "seguro": "seguro básico incluido a 0€, con dos niveles opcionales (Estándar 22€/noche, Extra 39€/noche)",
+    "minimos": "mínimo 3 noches (4 en temporada alta, 7 en agosto)",
+    "pet": "pet-friendly con suplemento único de 35€ por limpieza",
+    "ue": "viajes permitidos por toda la Unión Europea sin recargos",
+    "kit": "Kit Completo opcional (49€): ropa de cama, toallas, menaje de cocina y set de limpieza",
+    "pago": "pago fraccionado opcional (30% para reservar, 70% al recoger)",
+    "venta": "campers de la propia flota, con historial de mantenimiento completo, con opción de "
+             "'pruébala alquilando antes de comprar y te descontamos el importe del alquiler'",
+    "flota_ejemplos": "Santorini, Formentera, Nueva York, Bibury (gran volumen) y Compact Sky, "
+                      "Grey/Blue/Red Compact (mini van)",
+}
+
+
 def generate_ai_blog(keyword, title):
-    """Motor IA de redaccion. Sesga hacia el ALQUILER y excluye a propietarios."""
+    """Motor IA de redaccion. Se ciñe a los datos REALES de WF_FACTS. Detecta la
+    vertical de la keyword y adapta el enfoque (alquiler vs venta)."""
+    vert = clasifica_vertical(keyword) if "clasifica_vertical" in globals() else "ALQUILER"
     if "eurodisney" in keyword.lower():
         return """
         <h3>¿Te imaginas conocer el parque temático más famoso de Europa con tu casa sobre ruedas?</h3>
         <p>En <strong>Wheely Fog</strong>, tu empresa de alquiler de furgonetas camper en Valencia, hemos diseñado un itinerario para que disfrutes de un viaje a Eurodisney lleno de magia. Tanto en familia como en pareja o con amigos, ofrecemos furgonetas camper de hasta 5 personas.</p>
         <div class="img-suggestion">📸 <b>Prompt IA / Director de Arte:</b><br>"Fotografía hiperrealista. Una familia feliz saliendo de una furgoneta camper moderna y reluciente; de fondo desenfocado se intuye el castillo de Eurodisney. Luz de atardecer golden hour."<br><i>Alt text sugerido: Alquilar furgoneta camper en Valencia para ir a Eurodisney familiar.</i></div>
         <h4>La mejor época y el factor "Tranquilidad"</h4>
-        <p>Recomendamos fechas entre primavera y verano. Pero hay un factor crucial: <strong>el vehículo</strong>. El trayecto España-París supera los 1.300 km solo de ida. Muchos descartan la idea por miedo a someter su vehículo propio o antiguo a semejante desgaste. Aquí entra la inteligencia: <strong>alquilar una camper de última generación con Wheely Fog</strong> garantiza cero kilómetros en tu coche, motores revisados de bajo consumo y seguro a todo riesgo europeo.</p>
+        <p>Recomendamos fechas entre primavera y verano. Pero hay un factor crucial: <strong>el vehículo</strong>. El trayecto España-París supera los 1.300 km solo de ida. Muchos descartan la idea por miedo a someter su vehículo propio o antiguo a semejante desgaste. Aquí entra la inteligencia: <strong>alquilar una camper con Wheely Fog</strong> mantiene tu coche a cero kilómetros, e incluye seguro básico a 0€ (ampliable al nivel Extra con kilometraje ilimitado) y asistencia en carretera 24h por toda la Unión Europea.</p>
         <h4>Dormir en furgoneta camper en Eurodisney</h4>
         <ul>
             <li><strong>El parking del parque:</strong> zona para vaciar aguas, suministro eléctrico y baños.</li>
@@ -201,12 +225,42 @@ def generate_ai_blog(keyword, title):
         <div class="img-suggestion">📸 <b>Sugerencia de Fotografía Propia:</b><br>"Sube una foto real del interior del modelo 'Santorini' (5 plazas). Muestra la cama montada, bien iluminada, demostrando que es más cómodo que un hotel estándar."<br><i>Alt text sugerido: Interior cama furgoneta camper alquiler Wheely Fog Paris.</i></div>
         <p>Reserva tus entradas con antelación y calcula peajes. El parque se visita bien en 3 días. Entra en nuestra web, selecciona fechas y reserva hoy tu camper en Wheely Fog.</p>
         """
+    if vert == "VENTA":
+        return f"""
+    <h3>{title}</h3>
+    <p>En <strong>{WF_FACTS['empresa']}</strong> no solo alquilamos campers: también las vendemos.
+    Y con una ventaja poco habitual — son <strong>vehículos de nuestra propia flota</strong>, {WF_FACTS['venta']}.</p>
+    <p>Sabes exactamente lo que compras: cada camper tiene su historial de mantenimiento completo,
+    y puedes conocerla a fondo antes de decidir. Modelos como {WF_FACTS['flota_ejemplos']} pasan por
+    nuestro taller antes de ponerse a la venta.</p>
+    <div class="img-suggestion">📸 <b>Prompt IA / Director de Arte:</b><br>"Furgoneta camper Wheely Fog
+    limpia y preparada en exposición, con etiqueta de kilómetros e historial visible. Luz natural, aspecto
+    fiable y premium."<br><i>Alt text sugerido: Comprar camper de ocasión con historial en Valencia — Wheely Fog.</i></div>
+    <h4>Por qué comprar una ex-flota con historial</h4>
+    <p>Frente a un particular anónimo, aquí sabes cómo se ha cuidado el vehículo. Base en {WF_FACTS['base']}
+    Además, ofrecemos la opción de <strong>probarla alquilando antes de comprar</strong>: si te decides,
+    te descontamos el alquiler del precio final.</p>
+    <p><i>(El artículo continuaría con las fichas de los modelos disponibles: año, kilómetros, equipamiento y precio.)</i></p>
+    """
+    # Alquiler / informacional
     return f"""
-    <h3>Descubre {title}</h3>
-    <p>En <strong>Wheely Fog</strong> sabemos que las mejores aventuras a veces están a la vuelta de la esquina. No necesitas planificar expediciones de miles de kilómetros ni desgastar tu vehículo.</p>
-    <p>Nuestra filosofía es clara: transparencia y rentabilidad. Por eso el alquiler base incluye <strong>100 km por noche</strong>, la distancia matemáticamente perfecta para recoger tu vehículo en Rafelbunyol y plantarte en paraísos naturales sin pagar extra de kilometraje.</p>
-    <div class="img-suggestion">📸 <b>Prompt IA / Director de Arte:</b><br>"Furgoneta camper aparcada frente a la Albufera de Valencia al atardecer, dos sillas de camping desplegadas y dos tazas de café en una mesa plegable."<br><i>Alt text sugerido: Escapada camper barata desde Rafelbunyol Valencia.</i></div>
-    <p>Deja el mantenimiento, los seguros y los dolores de cabeza de tener un vehículo en propiedad para nosotros. <i>(El artículo continuaría detallando las 5 rutas locales).</i></p>
+    <h3>{title}</h3>
+    <p>En <strong>{WF_FACTS['empresa']}</strong> te lo ponemos fácil: {WF_FACTS['core']}, con
+    {WF_FACTS['entrega']} para máxima flexibilidad.</p>
+    <p>Nuestra filosofía es la transparencia: <strong>{WF_FACTS['seguro']}</strong>, {WF_FACTS['km_base']},
+    y {WF_FACTS['pet']}. Todo lo básico va de serie, sin sorpresas.</p>
+    <div class="img-suggestion">📸 <b>Prompt IA / Director de Arte:</b><br>"Furgoneta camper aparcada
+    frente a la Albufera de Valencia al atardecer, dos sillas de camping y dos cafés en una mesa plegable."
+    <br><i>Alt text sugerido: Alquiler de camper desde Rafelbunyol, Valencia — Wheely Fog.</i></div>
+    <h4>Lo que incluye tu alquiler</h4>
+    <ul>
+        <li>{WF_FACTS['km_base']}.</li>
+        <li>{WF_FACTS['seguro']}.</li>
+        <li>Opcional: {WF_FACTS['kit']}.</li>
+        <li>{WF_FACTS['ue']}. {WF_FACTS['minimos']}.</li>
+    </ul>
+    <p>Recoge tu camper en {WF_FACTS['base']} Reserva 100% online y {WF_FACTS['pago']}.
+    <i>(El artículo continuaría detallando las rutas locales recomendadas.)</i></p>
     """
 
 
@@ -323,15 +377,61 @@ def _normalize_perf(df, kind):
     return out
 
 
+def _normalize_timeseries(df):
+    """Chart.csv/Dates.csv de GSC -> DataFrame con Fecha (datetime), Mes (period),
+    Clics, Impresiones, CTR, Posicion. Soporta 'Date Range' con rango o fecha suelta."""
+    cols_lower = {c.lower().strip(): c for c in df.columns}
+    date_col = None
+    for key in ["date range", "fecha", "date", "week", "semana", "día", "dia", "day"]:
+        if key in cols_lower:
+            date_col = cols_lower[key]
+            break
+    if date_col is None:
+        date_col = df.columns[0]
+
+    def parse_date(v):
+        s = str(v).strip()
+        # "2025-07-07 - 2025-07-12" -> tomamos la fecha inicial del periodo
+        if " - " in s:
+            s = s.split(" - ")[0].strip()
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y/%m/%d"):
+            try:
+                return pd.to_datetime(s, format=fmt)
+            except Exception:
+                continue
+        try:
+            return pd.to_datetime(s)
+        except Exception:
+            return pd.NaT
+
+    out = pd.DataFrame()
+    out["Fecha"] = df[date_col].apply(parse_date)
+    out = out.dropna(subset=["Fecha"])
+    if out.empty:
+        return None
+    for target, key in [("Clics", "clicks"), ("Impresiones", "impressions"),
+                        ("CTR", "ctr"), ("Posicion", "position")]:
+        col = _find_col(cols_lower, COLMAP[key])
+        if col is None:
+            out[target] = np.nan
+        elif target == "CTR":
+            out[target] = _to_pct(df[col].reindex(out.index) if len(df) == len(out) else df[col]).values[:len(out)]
+        else:
+            vals = _to_num(df[col])
+            out[target] = vals.values[:len(out)]
+    out["Clics"] = pd.to_numeric(out["Clics"], errors="coerce").fillna(0).astype(int)
+    out["Impresiones"] = pd.to_numeric(out["Impresiones"], errors="coerce").fillna(0).astype(int)
+    out["Mes"] = out["Fecha"].dt.to_period("M").astype(str)
+    return out.sort_values("Fecha").reset_index(drop=True)
+
+
 def parse_gsc_upload(uploaded_file):
     """
     Punto de entrada unico. Acepta ZIP / CSV / XLSX de GSC.
-    Devuelve dict con lo que haya podido extraer:
-      { 'queries': df|None, 'pages': df|None,
-        'index_urls': df|None, 'index_issue': str|None, 'msg': str }
+    Devuelve dict: queries, pages, index_urls, index_issue, timeseries, msg.
     """
     res = {"queries": None, "pages": None, "index_urls": None,
-           "index_issue": None, "msg": ""}
+           "index_issue": None, "timeseries": None, "msg": ""}
     if uploaded_file is None:
         return res
     raw = uploaded_file.getvalue()
@@ -357,6 +457,14 @@ def parse_gsc_upload(uploaded_file):
             res["pages"] = _normalize_perf(dp, "page")
             if res["pages"] is not None:
                 msgs.append(f"Páginas: {len(res['pages'])} filas")
+
+        # Serie temporal (Chart.csv / Dates.csv): clics/impresiones/CTR/pos por fecha
+        dts, _ = _pick_from_zip(zf, ["chart", "date", "fecha", "week", "semana"])
+        if dts is not None:
+            ts = _normalize_timeseries(dts)
+            if ts is not None and not ts.empty:
+                res["timeseries"] = ts
+                msgs.append(f"Serie temporal: {len(ts)} periodos")
 
         # Cobertura / indexacion: Table.csv (URLs) + Metadata.csv (motivo)
         dt, _ = _pick_from_zip(zf, ["table"])
@@ -384,6 +492,15 @@ def parse_gsc_upload(uploaded_file):
         res["msg"] = "No se pudo leer el archivo."
         return res
     cols_lower = {c.lower().strip(): c for c in df.columns}
+    if any(k in cols_lower for k in ["date range", "fecha", "date", "week", "semana"]) and \
+       _find_col(cols_lower, COLMAP["clicks"]) is not None and \
+       _find_col(cols_lower, COLMAP["query"]) is None and \
+       _find_col(cols_lower, COLMAP["page"]) is None:
+        ts = _normalize_timeseries(df)
+        if ts is not None:
+            res["timeseries"] = ts
+            res["msg"] = f"Serie temporal: {len(ts)} periodos"
+            return res
     if _find_col(cols_lower, COLMAP["query"]) is not None:
         res["queries"] = _normalize_perf(df, "query")
         res["msg"] = f"Consultas: {len(res['queries'])} filas"
@@ -637,8 +754,123 @@ def build_gsc_recommendations(df_q):
 
 
 # ==========================================
-# 3. MOTOR DE RECOMENDACIONES (NUEVO)
-#    Reglas de negocio de un gestor SEO/SEM. Mas adelante esta capa la consume
+# 2.d ANALISIS TEMPORAL + CONCLUSIONES EXPERTAS
+#     Comparativa entre periodos y diagnostico de por que sube/baja el trafico,
+#     con conocimiento del sector (alquiler+venta de campers) y de SEO.
+# ==========================================
+# Estacionalidad real del alquiler de camper en España (demanda de búsqueda).
+ESTACIONALIDAD = {
+    1: "baja (post-navidad)", 2: "baja, arranque de planificación de verano",
+    3: "subida (Semana Santa se empieza a buscar)", 4: "alta (Semana Santa y puentes)",
+    5: "alta (pre-verano, pico de reservas de julio/agosto)",
+    6: "muy alta (planificación de verano en pleno apogeo)",
+    7: "alta pero ya en ejecución (mucha búsqueda de última hora)",
+    8: "media-alta (agosto, reservas de última hora y septiembre)",
+    9: "media (escapadas de otoño, puente de octubre)",
+    10: "media (puente de octubre/todos los santos)",
+    11: "baja (valle estacional)", 12: "baja-media (repunte por regalos de Navidad, packs regalo)",
+}
+
+
+def resumen_periodo(ts, periodo):
+    """Agrega la serie temporal a un mes concreto (str 'YYYY-MM')."""
+    d = ts[ts["Mes"] == periodo]
+    if d.empty:
+        return None
+    clics = int(d["Clics"].sum())
+    impr = int(d["Impresiones"].sum())
+    ctr = (clics / impr) if impr else 0
+    cp = d.dropna(subset=["Posicion"])
+    pos = ((cp["Posicion"] * cp["Impresiones"]).sum() / max(cp["Impresiones"].sum(), 1)) if not cp.empty else np.nan
+    return {"clics": clics, "impr": impr, "ctr": ctr, "pos": pos, "n": len(d)}
+
+
+def comparar_periodos(ts, mes_a, mes_b):
+    """Compara dos meses y genera conclusiones EXPERTAS de por qué cambió el tráfico."""
+    a = resumen_periodo(ts, mes_a)
+    b = resumen_periodo(ts, mes_b)
+    if a is None or b is None:
+        return None, []
+    # Aviso de mes incompleto: si un periodo tiene muchos menos registros que el otro
+    aviso_parcial = None
+    if a["n"] and b["n"] and (min(a["n"], b["n"]) / max(a["n"], b["n"]) < 0.5):
+        menor = mes_b if b["n"] < a["n"] else mes_a
+        aviso_parcial = ("⚠️", "Comparativa con un mes incompleto",
+            f"{menor} tiene bastantes menos registros que el otro mes (probablemente está a medias). "
+            "Los porcentajes pueden exagerar la caída/subida. Compara meses completos para leer bien la tendencia.")
+    def pct(x, y):
+        return ((y - x) / x * 100) if x else 0
+    delta = {
+        "clics": pct(a["clics"], b["clics"]),
+        "impr": pct(a["impr"], b["impr"]),
+        "ctr": pct(a["ctr"], b["ctr"]),
+        "pos": (b["pos"] - a["pos"]) if (pd.notna(a["pos"]) and pd.notna(b["pos"])) else np.nan,
+    }
+    concl = []
+    if aviso_parcial:
+        concl.append(aviso_parcial)
+    try:
+        m_b = int(mes_b.split("-")[1])
+    except Exception:
+        m_b = None
+
+    # 1) Diagnóstico de clics + causa raíz (impresiones vs CTR vs posición)
+    if delta["clics"] <= -10:
+        causa = "impresiones" if delta["impr"] <= -8 else ("posición" if (pd.notna(delta["pos"]) and delta["pos"] > 0.5) else "CTR")
+        if causa == "impresiones":
+            concl.append(("🔻", "Caída de clics por menos impresiones (demanda o indexación)",
+                f"Los clics bajan {delta['clics']:.0f}% y las impresiones {delta['impr']:.0f}%. "
+                "Google te muestra menos: o bajó la demanda estacional, o perdiste páginas indexadas "
+                "(revisa el módulo Salud de Indexación: los 404 recientes encajan con esto)."))
+        elif causa == "posición":
+            concl.append(("🔻", "Caída de clics por pérdida de posiciones",
+                f"Clics {delta['clics']:.0f}% y la posición media empeora {delta['pos']:.1f} puestos. "
+                "Competencia o pérdida de relevancia: refuerza contenido y enlazado de las URLs clave."))
+        else:
+            concl.append(("🔻", "Caída de clics con impresiones estables = problema de CTR",
+                f"Sigues apareciendo (impresiones {delta['impr']:+.0f}%) pero te clican menos "
+                f"(CTR {delta['ctr']:+.0f}%). Suele ser title/meta poco atractivos o nuevos competidores "
+                "con mejor snippet. Reescribe titles con ganchos."))
+    elif delta["clics"] >= 10:
+        motor = "más impresiones" if delta["impr"] >= 8 else ("mejor posición" if (pd.notna(delta["pos"]) and delta["pos"] < -0.5) else "mejor CTR")
+        concl.append(("🔺", f"Subida de clics impulsada por {motor}",
+            f"Clics {delta['clics']:+.0f}% (impresiones {delta['impr']:+.0f}%, CTR {delta['ctr']:+.0f}%, "
+            f"posición {delta['pos']:+.1f}). Identifica qué páginas/keywords lo motivan y dóblalas."))
+    else:
+        concl.append(("➡️", "Tráfico estable entre ambos periodos",
+            f"Variación de clics {delta['clics']:+.0f}%. Sin movimientos bruscos."))
+
+    # 2) Lectura estacional del sector camper
+    if m_b:
+        concl.append(("📅", "Contexto estacional del sector (alquiler camper)",
+            f"{mes_b}: demanda típicamente {ESTACIONALIDAD.get(m_b, 'variable')}. "
+            "Compara la variación real con esta expectativa: si caes en temporada alta, es un problema tuyo; "
+            "si caes en valle estacional, es mercado."))
+
+    # 3) Palanca experta según posición media
+    if pd.notna(b["pos"]):
+        if b["pos"] > 10:
+            concl.append(("🛠️", "Posición media fuera de página 1",
+                f"Posición media {b['pos']:.1f}: gran parte de tus impresiones no reciben clic. "
+                "El mayor retorno está en subir a Top 10 las keywords de más impresiones (ver quick-wins)."))
+        elif b["pos"] <= 5:
+            concl.append(("✅", "Posición media fuerte",
+                f"Posición media {b['pos']:.1f}: estás arriba. El margen ahora está en CTR "
+                "(titles/meta) y en captar keywords nuevas, no en subir posiciones."))
+    return {"a": a, "b": b, "delta": delta, "mes_a": mes_a, "mes_b": mes_b}, concl
+
+
+def tabla_rendimiento(df, top=100):
+    """Prepara la tabla estilo GSC (Consulta/Página, Clics, Impresiones, CTR, Posición, Vertical)."""
+    if df is None or df.empty:
+        return None
+    d = df.copy()
+    d["Vertical"] = d["termino"].apply(clasifica_vertical)
+    d["CTR %"] = (d["CTR"] * 100).round(1)
+    d = d.rename(columns={"termino": "Término"})
+    cols = ["Término", "Vertical", "Clics", "Impresiones", "CTR %", "Posicion"]
+    d = d[cols].rename(columns={"Posicion": "Posición"})
+    return d.sort_values("Clics", ascending=False).head(top)
 #    un LLM (Claude tool-use) que razona sobre datos reales.
 # ==========================================
 INTENT_COMPRA = ["comprar", "compra", "segunda mano", "venta", "vender", "ocasion", "km0", "km 0"]
@@ -748,6 +980,8 @@ if "gsc_pages" not in st.session_state:
     st.session_state.gsc_pages = None
 if "gsc_index" not in st.session_state:
     st.session_state.gsc_index = []  # lista de (issue, df_urls)
+if "gsc_ts" not in st.session_state:
+    st.session_state.gsc_ts = None  # serie temporal (Chart.csv)
 
 # ==========================================
 # 4. BARRA LATERAL Y FILTROS GLOBALES
@@ -786,6 +1020,8 @@ with st.sidebar:
                 st.session_state.gsc_index = [x for x in st.session_state.gsc_index
                                               if x[0] != issue]
                 st.session_state.gsc_index.append((issue, r["index_urls"]))
+            if r.get("timeseries") is not None:
+                st.session_state.gsc_ts = r["timeseries"]
             st.success(f"{uf.name}: {r['msg']}")
 
     st.divider()
@@ -879,8 +1115,8 @@ elif hemisferio == "📡 SEO Real (Search Console)":
                 "(Rendimiento → Exportar, o Indexación → un motivo → Exportar). "
                 "También valen CSV o XLSX sueltos.")
     else:
-        tab_perf, tab_kw, tab_pag, tab_idx = st.tabs(
-            ["📈 Resumen", "🔍 Consultas", "🔗 Páginas", "🩺 Salud de Indexación"])
+        tab_perf, tab_evo, tab_kw, tab_pag, tab_idx = st.tabs(
+            ["📈 Resumen", "📆 Evolución y Comparativa", "🔍 Consultas", "🔗 Páginas", "🩺 Salud de Indexación"])
 
         # --- Resumen ---
         with tab_perf:
@@ -911,26 +1147,75 @@ elif hemisferio == "📡 SEO Real (Search Console)":
             else:
                 st.info("Sube el archivo de Consultas o Páginas para ver el resumen.")
 
-        # --- Consultas ---
+        # --- Evolución y Comparativa temporal ---
+        with tab_evo:
+            ts = st.session_state.gsc_ts
+            if ts is None or ts.empty:
+                st.info("Para el filtro temporal y las comparativas necesito la **serie temporal**. "
+                        "Viene dentro del ZIP de Rendimiento de GSC (archivo Chart.csv). "
+                        "Vuelve a subir ese ZIP completo y aparecerá aquí automáticamente.")
+            else:
+                st.markdown("Evolución real por periodos y **comparativa entre dos meses** con "
+                            "diagnóstico experto de por qué sube o baja el tráfico.")
+                # Métrica a graficar + filtro de meses
+                meses = sorted(ts["Mes"].unique())
+                fc1, fc2 = st.columns([1, 2])
+                metrica = fc1.selectbox("Métrica:", ["Clics", "Impresiones", "CTR", "Posicion"])
+                rango = fc2.select_slider("Rango de meses:", options=meses,
+                                          value=(meses[0], meses[-1]))
+                tsf = ts[(ts["Mes"] >= rango[0]) & (ts["Mes"] <= rango[1])]
+                # Serie agregada por mes
+                agg = tsf.groupby("Mes").agg(
+                    Clics=("Clics", "sum"), Impresiones=("Impresiones", "sum"),
+                    CTR=("CTR", "mean"), Posicion=("Posicion", "mean")).reset_index()
+                fig = px.line(agg, x="Mes", y=metrica, markers=True,
+                              title=f"Evolución de {metrica} por mes")
+                if metrica == "Posicion":
+                    fig.update_yaxes(autorange="reversed")
+                st.plotly_chart(fig, use_container_width=True)
+
+                st.divider()
+                st.subheader("🆚 Comparar dos meses")
+                cc1, cc2 = st.columns(2)
+                mes_a = cc1.selectbox("Mes base (antes):", meses, index=max(0, len(meses) - 2))
+                mes_b = cc2.selectbox("Mes a comparar (después):", meses, index=len(meses) - 1)
+                comp, conclusiones = comparar_periodos(ts, mes_a, mes_b)
+                if comp:
+                    a, b, delta = comp["a"], comp["b"], comp["delta"]
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Clics", f"{b['clics']:,}", f"{delta['clics']:+.0f}%")
+                    m2.metric("Impresiones", f"{b['impr']:,}", f"{delta['impr']:+.0f}%")
+                    m3.metric("CTR", f"{b['ctr']*100:.1f}%", f"{delta['ctr']:+.0f}%")
+                    pos_txt = f"{delta['pos']:+.1f}" if pd.notna(delta['pos']) else "n/d"
+                    m4.metric("Posición media", f"{b['pos']:.1f}" if pd.notna(b['pos']) else "n/d",
+                              pos_txt, delta_color="inverse")
+                    st.markdown(f"##### 🧠 Conclusiones del agente ({mes_a} → {mes_b})")
+                    for icono, titulo, detalle in conclusiones:
+                        st.markdown(f"**{icono} {titulo}**  \n{detalle}")
+                else:
+                    st.warning("No hay datos suficientes en alguno de los dos meses elegidos.")
+
+        # --- Consultas (tabla estilo GSC) ---
         with tab_kw:
             if dfq is not None:
                 q = st.text_input("Filtrar consultas:")
-                d = dfq.copy()
-                d["Vertical"] = d["termino"].apply(clasifica_vertical)
+                tabla = tabla_rendimiento(dfq, top=1000)
                 if q:
-                    d = d[d["termino"].str.contains(q, case=False, na=False)]
-                d = d.rename(columns={"termino": "Consulta"})
-                st.dataframe(d.sort_values("Clics", ascending=False),
-                             use_container_width=True, hide_index=True)
+                    tabla = tabla[tabla["Término"].str.contains(q, case=False, na=False)]
+                st.caption(f"{len(tabla)} consultas reales · clics, impresiones, CTR y posición.")
+                st.dataframe(tabla, use_container_width=True, hide_index=True)
             else:
                 st.info("No has subido el archivo de Consultas (Queries).")
 
-        # --- Páginas ---
+        # --- Páginas (tabla estilo GSC) ---
         with tab_pag:
             if dfp is not None:
-                d = dfp.rename(columns={"termino": "Página"})
-                st.dataframe(d.sort_values("Clics", ascending=False),
-                             use_container_width=True, hide_index=True)
+                tabla_p = tabla_rendimiento(dfp, top=1000).rename(columns={"Término": "Página"})
+                qp = st.text_input("Filtrar páginas:")
+                if qp:
+                    tabla_p = tabla_p[tabla_p["Página"].str.contains(qp, case=False, na=False)]
+                st.caption(f"{len(tabla_p)} páginas reales.")
+                st.dataframe(tabla_p, use_container_width=True, hide_index=True)
             else:
                 st.info("No has subido el archivo de Páginas (Pages).")
 
@@ -954,50 +1239,69 @@ elif hemisferio == "📡 SEO Real (Search Console)":
 
 elif hemisferio == "🛰️ SEM (Performance & Subastas)":
     st.title("🛰️ Director de Performance (SEM Ads)")
-    st.markdown(f"Auditoría del capital inyectado en subastas. Datos de los últimos **{dias_filtro} días**.")
 
-    total_gasto = df_sem["Coste (€)"].sum()
-    total_retorno = df_sem["Valor (€)"].sum()
-    total_conv = df_sem["Conversiones"].sum()
-    roas_global = total_retorno / total_gasto if total_gasto > 0 else 0
-    cpa_global = total_gasto / total_conv if total_conv > 0 else 0
+    # --- HONESTIDAD DE DATOS: S/N de lo que realmente tenemos conectado ---
+    tiene_ads = False          # Google Ads API: no conectada
+    tiene_valor = False        # Valor de conversión (pasarela): requiere GA4/Ads
+    st.markdown("### 📡 ¿Tenemos estos datos? (estado real de las fuentes)")
+    d1, d2, d3, d4 = st.columns(4)
+    def sn(col, titulo, disponible, nota):
+        with col:
+            estado = "✅ Sí" if disponible else "❌ No"
+            color = "seo" if disponible else "sem"
+            render_metric(titulo, estado, color)
+            st.caption(nota)
+    sn(d1, "Gasto publicitario", tiene_ads, "Fuente: Google Ads API (sin conectar)")
+    sn(d2, "Retorno / Valor conv.", tiene_valor, "Fuente: GA4 + pasarela (sin conectar)")
+    sn(d3, "ROAS real", tiene_ads and tiene_valor, "Necesita gasto + valor")
+    sn(d4, "CPA real", tiene_ads and tiene_valor, "Necesita gasto + conversiones")
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: render_metric("Gasto Total", f"{total_gasto:,.2f} €", "sem")
-    with c2: render_metric("Retorno Generado", f"{total_retorno:,.2f} €", "sem", "+14.2%", "up")
-    with c3: render_metric("ROAS de Cuenta", f"{roas_global:.2f}x", "sem")
-    with c4: render_metric("CPA Promedio", f"{cpa_global:.2f} €", "sem", "-2.10 €", "up")
+    if not (tiene_ads and tiene_valor):
+        st.error("⚠️ **No hay datos reales de SEM todavía.** Antes mostrábamos cifras de retorno/ROAS "
+                 "que eran de demostración (falsas). Para no engañar, ahora se marcan como ❌ No. "
+                 "Para activarlas hay que conectar: **Google Ads API** (gasto, impresiones, clics de pago) "
+                 "y **GA4 + valor de pasarela** (pernocta + seguro + kit) para el retorno.")
+        st.info("💡 Lo que **sí** es real y puedes explotar hoy está en **📡 SEO Real (Search Console)**: "
+                "clics, impresiones, CTR y posición orgánicos.")
 
-    st.divider()
-    st.subheader("🔍 Motor de Búsqueda de Términos (Auditoría SEM)")
-    term_search = st.text_input("Introduce un término (Ej: valencia, segunda mano, santorini):")
-    if term_search:
-        df_f = df_sem[df_sem["Término"].str.contains(term_search, case=False, na=False)]
-        if not df_f.empty:
-            fg = df_f["Coste (€)"].sum(); fv = df_f["Valor (€)"].sum()
-            fr = fv / fg if fg > 0 else 0
-            st.info(f"Resultados aislados para: **'{term_search}'**")
-            s1, s2, s3 = st.columns(3)
-            s1.metric("Gasto Acumulado", f"{fg:,.2f} €")
-            s2.metric("Conversiones", int(df_f["Conversiones"].sum()))
-            s3.metric("ROAS Específico", f"{fr:.2f}x")
-            st.dataframe(df_f.sort_values("Fecha", ascending=False).head(50), use_container_width=True, hide_index=True)
-        else:
-            st.warning(f"No hay registros para '{term_search}' en los últimos {dias_filtro} días.")
-
-    st.divider()
-    t1, t2 = st.tabs(["📈 Tendencia Inversión vs Retorno", "🍩 Distribución por Campaña"])
-    with t1:
+    with st.expander("Ver todavía la maqueta de demostración (datos NO reales)"):
+        total_gasto = df_sem["Coste (€)"].sum()
+        total_retorno = df_sem["Valor (€)"].sum()
+        total_conv = df_sem["Conversiones"].sum()
+        roas_global = total_retorno / total_gasto if total_gasto > 0 else 0
+        cpa_global = total_gasto / total_conv if total_conv > 0 else 0
+        st.caption("⚠️ Cifras sintéticas para probar la interfaz. No son de wheelyfog.com.")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Gasto (demo)", f"{total_gasto:,.2f} €")
+        c2.metric("Retorno (demo)", f"{total_retorno:,.2f} €")
+        c3.metric("ROAS (demo)", f"{roas_global:.2f}x")
+        c4.metric("CPA (demo)", f"{cpa_global:.2f} €")
         df_trend = df_sem.groupby("Fecha").agg({"Coste (€)": "sum", "Valor (€)": "sum"}).reset_index()
         fig = go.Figure()
         fig.add_trace(go.Bar(x=df_trend["Fecha"], y=df_trend["Coste (€)"], name="Inversión (€)", marker_color=COLORS["sem"]))
         fig.add_trace(go.Scatter(x=df_trend["Fecha"], y=df_trend["Valor (€)"], mode="lines+markers", name="Retorno (€)", line=dict(color=COLORS["global"], width=3)))
-        fig.update_layout(barmode="group", hovermode="x unified", title="Evolución Diaria del Margen")
+        fig.update_layout(barmode="group", hovermode="x unified", title="Evolución (demo, no real)")
         st.plotly_chart(fig, use_container_width=True)
-    with t2:
-        df_camp = df_sem.groupby("Campaña").agg({"Coste (€)": "sum"}).reset_index()
-        fig2 = px.pie(df_camp, values="Coste (€)", names="Campaña", title="Distribución del Presupuesto por Campaña", hole=0.4)
-        st.plotly_chart(fig2, use_container_width=True)
+
+    # --- TABLA REAL: términos orgánicos que sí funcionan (de GSC) ---
+    st.divider()
+    st.subheader("🔍 Términos con buen rendimiento (datos REALES de Search Console)")
+    dfq_sem = st.session_state.gsc_queries
+    if dfq_sem is None:
+        st.info("Sube el ZIP de Search Console (barra lateral) para ver aquí tus términos reales, "
+                "identificar los que mejor convierten en orgánico y decidir cuáles reforzar con SEM cuando lo conectes.")
+    else:
+        tabla = tabla_rendimiento(dfq_sem, top=200)
+        f1, f2 = st.columns([2, 1])
+        q_txt = f1.text_input("Filtrar término (ej: valencia, alquiler, ocasión):", key="sem_qf")
+        v_sel = f2.multiselect("Vertical:", list(VERT_COLORS.keys()),
+                               default=list(VERT_COLORS.keys()), key="sem_vf")
+        tv = tabla[tabla["Vertical"].isin(v_sel)]
+        if q_txt:
+            tv = tv[tv["Término"].str.contains(q_txt, case=False, na=False)]
+        st.caption(f"{len(tv)} términos · ordenados por clics reales. "
+                   "Los de alto CTR y buena posición son candidatos a proteger/escalar en SEM.")
+        st.dataframe(tv, use_container_width=True, hide_index=True)
 
 
 # ==========================================
