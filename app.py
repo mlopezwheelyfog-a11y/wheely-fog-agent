@@ -400,24 +400,57 @@ def parse_gsc_upload(uploaded_file):
 
 
 # --- Clasificador de VERTICALES de negocio (ALQUILER/VENTA/CAMPERIZACION/MARCA) ---
+# Wheely Fog opera ALQUILER y VENTA como negocios PARALELOS e independientes.
+# El clasificador NO usa listas planas (causaban mezcla): puntúa señales de
+# intención y gana la señal transaccional DOMINANTE. Regla de oro: el verbo de
+# acción manda. "alquiler ... barata" es ALQUILER (el usuario quiere alquilar
+# barato), no VENTA, aunque contenga "barata".
 FLOTA = ["santorini", "kioto", "bibury", "formentera", "nueva york", "arizona",
          "kenia", "gamla stan", "la cabaña", "la cabana", "compact sky",
          "red compact", "blue compact", "grey compact", "white compact",
          "vancubic", "sa talaia"]
-TERMS_VENTA = ["comprar", "compra", "venta", "vender", "en venta", "precio camper",
-               "cuanto cuesta", "financiacion", "financiación", "km0", "km 0",
-               "adquirir", "concesionario", "camper nueva", "furgoneta nueva",
-               "camper a estrenar", "precio furgoneta camper"]
-TERMS_TOXICOS_VENTA = ["segunda mano", "barato", "barata", "baratas", "baratos",
-                       "particular", "ocasion", "ocasión", "de segunda"]
+
+# Señales de ACCIÓN (verbo de intención) — pesan más que los adjetivos
+SIG_ALQUILER = ["alquiler", "alquilar", "alquilo", "alquila", "rent", "renting",
+                "de alquiler", "en alquiler"]
+SIG_VENTA = ["comprar", "compra", "venta", "vender", "en venta", "adquirir",
+             "concesionario", "financiacion", "financiación", "financiar",
+             "km0", "km 0", "a la venta"]
+# Señales de CONTEXTO (refuerzan, no deciden solas)
+CTX_ALQUILER = ["fin de semana", "finde", "escapada", "escapadas", "ruta", "rutas",
+                "vacaciones", "viaje", "viajar", "noches", "por dias", "por días",
+                "una semana", "puente", "pernocta", "dormir"]
+CTX_VENTA = ["precio camper", "precio furgoneta", "cuanto cuesta comprar",
+             "camper nueva", "furgoneta nueva", "camper a estrenar",
+             "camper en venta", "furgoneta en venta"]
+TERMS_TOXICOS_VENTA = ["segunda mano", "particular", "ocasion", "ocasión",
+                       "de segunda", "reacondicionad"]
 TERMS_CAMPERIZACION = ["camperizar", "camperizacion", "camperización", "homologar",
                        "homologacion", "homologación", "mueble camper", "kit camper",
-                       "aislamiento furgoneta", "transformar furgoneta"]
-TERMS_ALQUILER = ["alquiler", "alquilar", "rent", "renting", "fin de semana",
-                  "escapada", "ruta", "vacaciones", "viaje", "noches", "autocaravana"]
+                       "aislamiento furgoneta", "transformar furgoneta", "camperizada diy"]
+
+
+def _score_intent(k):
+    """Puntúa señales de cada vertical. Acción=3, contexto=1. Devuelve dict."""
+    s = {"ALQUILER": 0, "VENTA": 0}
+    for t in SIG_ALQUILER:
+        if t in k:
+            s["ALQUILER"] += 3
+    for t in SIG_VENTA:
+        if t in k:
+            s["VENTA"] += 3
+    for t in CTX_ALQUILER:
+        if t in k:
+            s["ALQUILER"] += 1
+    for t in CTX_VENTA:
+        if t in k:
+            s["VENTA"] += 1
+    return s
 
 
 def clasifica_vertical(kw):
+    """Devuelve la vertical dominante. Prioridad: MARCA > CAMPERIZACION > (VENTA vs
+    ALQUILER por puntuación de intención) > INFORMACIONAL."""
     k = str(kw).lower()
     if "wheely" in k:
         return "MARCA"
@@ -425,15 +458,22 @@ def clasifica_vertical(kw):
         return "MARCA"
     if any(t in k for t in TERMS_CAMPERIZACION):
         return "CAMPERIZACION"
-    if any(t in k for t in TERMS_VENTA) or any(t in k for t in TERMS_TOXICOS_VENTA):
-        return "VENTA"
-    if any(t in k for t in TERMS_ALQUILER):
+    s = _score_intent(k)
+    # Si hay señal de alquiler, ALQUILER gana los empates (el verbo de acción manda)
+    if s["ALQUILER"] > 0 and s["ALQUILER"] >= s["VENTA"]:
         return "ALQUILER"
+    if s["VENTA"] > s["ALQUILER"]:
+        return "VENTA"
     return "INFORMACIONAL"
 
 
 def es_toxico_para_venta(kw):
-    return any(t in str(kw).lower() for t in TERMS_TOXICOS_VENTA)
+    """Tóxico SOLO si es intención de VENTA con señal de segunda mano/particular.
+    'alquiler barato' NO es tóxico (es alquiler legítimo)."""
+    k = str(kw).lower()
+    if clasifica_vertical(kw) != "VENTA":
+        return False
+    return any(t in k for t in TERMS_TOXICOS_VENTA)
 
 
 VERT_COLORS = {"ALQUILER": "#1a73e8", "VENTA": "#9334e6", "CAMPERIZACION": "#e37400",
@@ -494,23 +534,66 @@ def build_gsc_recommendations(df_q):
             "financiación, CTA de contacto). No mezclar con páginas de alquiler.",
             "Pipeline de leads de compra de alto ticket sin depender de puja")
 
-    alq = df[df["Vertical"] == "ALQUILER"]
-    strike = alq[(alq["Posicion"] >= 4) & (alq["Posicion"] <= 15) & (alq["Impresiones"] >= 50)]
-    for _, r in strike.sort_values("Impresiones", ascending=False).head(10).iterrows():
-        ctr_txt = f"{r['CTR']*100:.1f}%" if pd.notna(r["CTR"]) else "n/d"
-        add("media", "SEO", "semanal", r["termino"], "ALQUILER",
-            "Striking distance: a un empujón del Top 3",
-            f'"{r["termino"]}" — pos {r["Posicion"]:.0f}, {int(r["Impresiones"]):,} impr., CTR {ctr_txt}.',
-            f"Refuerzo on-page + enlazado interno. Ganchos: {GANCHOS[0]}, {GANCHOS[1]}.",
-            "Tráfico transaccional incremental gratis")
+    # ---- ALQUILER: quick-wins tipo agente Google ----
+    # CTR medio esperado por posición (curva estándar aproximada). Sirve para
+    # estimar la GANANCIA de clics de subir una keyword, y priorizar por impacto.
+    def ctr_esperado(pos):
+        tabla = {1: .28, 2: .16, 3: .11, 4: .08, 5: .06, 6: .05,
+                 7: .04, 8: .032, 9: .028, 10: .025}
+        p = int(round(pos)) if pd.notna(pos) else 20
+        if p <= 10:
+            return tabla.get(p, .025)
+        return max(.02 - (p - 10) * 0.0015, 0.003)
 
-    top_bajo = df[(df["Posicion"] <= 5) & (df["Impresiones"] >= 200) & (df["CTR"] < 0.02)]
+    def ganancia_clics(r, objetivo=3):
+        """Clics extra estimados si sube a la posición objetivo (top 3)."""
+        if pd.isna(r["Posicion"]) or r["Impresiones"] <= 0:
+            return 0
+        actual = r["CTR"] if pd.notna(r["CTR"]) and r["CTR"] > 0 else ctr_esperado(r["Posicion"])
+        meta = ctr_esperado(objetivo)
+        return max(int(r["Impresiones"] * (meta - actual)), 0)
+
+    alq = df[df["Vertical"] == "ALQUILER"].copy()
+    # Ventana quick-win: pos 4-10 (página 1 baja) — mínimo esfuerzo, máximo salto de CTR
+    quick = alq[(alq["Posicion"] >= 4) & (alq["Posicion"] <= 10) & (alq["Impresiones"] >= 50)].copy()
+    if not quick.empty:
+        quick["ganancia"] = quick.apply(ganancia_clics, axis=1)
+        quick = quick.sort_values("ganancia", ascending=False)
+        for _, r in quick.head(8).iterrows():
+            g = int(r["ganancia"])
+            sev = "alta" if g >= 30 else "media"
+            ctr_txt = f"{r['CTR']*100:.1f}%" if pd.notna(r["CTR"]) else "n/d"
+            add(sev, "SEO", "semanal", r["termino"], "ALQUILER",
+                f"Quick-win ALQUILER: +{g} clics/mes estimados subiendo al Top 3",
+                f'"{r["termino"]}" — pos {r["Posicion"]:.0f}, {int(r["Impresiones"]):,} impr., CTR {ctr_txt}. '
+                "Ya estás en página 1: subir 1-3 puestos es el mayor retorno por esfuerzo.",
+                f"Un solo ajuste on-page: meter la keyword exacta en H1+title, 2-3 enlaces internos "
+                f"desde páginas de alquiler potentes, y añadir gancho ({GANCHOS[0]}). Sin crear contenido nuevo.",
+                f"~{g} clics/mes de alquiler sin coste de puja")
+
+    # ALQUILER: pos 11-20 (inicio página 2) — segundo lote, algo más de trabajo
+    pag2 = alq[(alq["Posicion"] > 10) & (alq["Posicion"] <= 20) & (alq["Impresiones"] >= 150)].copy()
+    if not pag2.empty:
+        pag2["ganancia"] = pag2.apply(lambda r: ganancia_clics(r, objetivo=8), axis=1)
+        for _, r in pag2.sort_values("ganancia", ascending=False).head(4).iterrows():
+            add("media", "SEO", "semanal", r["termino"], "ALQUILER",
+                "ALQUILER en página 2: empujar a página 1",
+                f'"{r["termino"]}" — pos {r["Posicion"]:.0f}, {int(r["Impresiones"]):,} impr. '
+                "Alta demanda pero fuera de página 1: no recibe casi clics.",
+                "Reforzar la página existente (contenido + enlazado interno). Un solo empujón la mete en página 1.",
+                "Desbloquea demanda de alquiler hoy invisible")
+
+    # ---- CTR bajo en Top 5 (cualquier vertical): arreglo de title/meta ----
+    top_bajo = df[(df["Posicion"] <= 5) & (df["Impresiones"] >= 200) & (df["CTR"] < 0.02)].copy()
     for _, r in top_bajo.sort_values("Impresiones", ascending=False).head(5).iterrows():
-        add("media", "SEO", "semanal", r["termino"], clasifica_vertical(r["termino"]),
-            "Top 5 pero casi nadie hace clic (revisar title/meta)",
-            f'"{r["termino"]}" — pos {r["Posicion"]:.0f}, {int(r["Impresiones"]):,} impr., CTR {r["CTR"]*100:.1f}%.',
-            f"Reescribir title y meta description con gancho: {GANCHOS[0]} / {GANCHOS[2]}.",
-            "Más clics con el mismo ranking (gratis)")
+        v = clasifica_vertical(r["termino"])
+        add("alta", "SEO", "semanal", r["termino"], v,
+            "Top 5 pero casi nadie hace clic (arreglo de 1 línea: title/meta)",
+            f'"{r["termino"]}" — pos {r["Posicion"]:.0f}, {int(r["Impresiones"]):,} impr., CTR {r["CTR"]*100:.1f}%. '
+            "Ya rankeas arriba; el problema es que el resultado no invita a clicar.",
+            f"Reescribir SOLO el title y la meta description con un gancho ({GANCHOS[0]} / {GANCHOS[2]}). "
+            "Cero cambios de contenido, efecto inmediato.",
+            "Más clics con el mismo ranking, esfuerzo mínimo")
 
     add("info", "Sistema", "semanal", "-", "INFORMACIONAL",
         "Valor de conversión real: requiere GA4 + Google Ads",
