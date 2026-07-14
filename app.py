@@ -425,6 +425,77 @@ def _normalize_timeseries(df):
     return out.sort_values("Fecha").reset_index(drop=True)
 
 
+MESES_ES = {"ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
+            "jul": 7, "ago": 8, "sep": 9, "oct": 10, "nov": 11, "dic": 12}
+
+
+def _parse_fecha_es(s):
+    """'11 may 2026, 9:21:48' -> Timestamp. Soporta formatos de Google Ads en ES."""
+    s = str(s).strip()
+    m = re.match(r"(\d{1,2})\s+(\w{3})\w*\s+(\d{4})", s)
+    if m:
+        d, mes, y = m.groups()
+        try:
+            return pd.Timestamp(int(y), MESES_ES.get(mes[:3].lower(), 1), int(d))
+        except Exception:
+            return pd.NaT
+    try:
+        return pd.to_datetime(s, dayfirst=True)
+    except Exception:
+        return pd.NaT
+
+
+def parse_ads_change_history(raw_bytes, filename):
+    """Lee el 'Informe de historial de cambios' de Google Ads (CSV/XLSX).
+    Devuelve DataFrame con Fecha, Usuario, Campaña, Grupo, Cambios | None."""
+    name = filename.lower()
+    df = None
+    try:
+        if name.endswith((".xlsx", ".xls")):
+            # La cabecera real suele estar 2 filas más abajo
+            for sk in (0, 1, 2, 3):
+                tmp = pd.read_excel(io.BytesIO(raw_bytes), skiprows=sk)
+                if any("fecha" in str(c).lower() for c in tmp.columns):
+                    df = tmp
+                    break
+        else:
+            for enc in ("utf-8-sig", "utf-8", "latin-1"):
+                for sk in (0, 1, 2, 3):
+                    try:
+                        tmp = pd.read_csv(io.BytesIO(raw_bytes), encoding=enc,
+                                          skiprows=sk, engine="python")
+                        if any("fecha" in str(c).lower() for c in tmp.columns):
+                            df = tmp
+                            break
+                    except Exception:
+                        continue
+                if df is not None:
+                    break
+    except Exception:
+        return None
+    if df is None or df.empty:
+        return None
+
+    cols = {c.lower().strip(): c for c in df.columns}
+    fcol = next((cols[c] for c in cols if "fecha" in c), None)
+    if fcol is None:
+        return None
+    out = pd.DataFrame()
+    out["Fecha"] = df[fcol].apply(_parse_fecha_es)
+    out["Usuario"] = df[cols.get("usuario", fcol)] if "usuario" in cols else ""
+    ccol = next((cols[c] for c in cols if "campa" in c), None)
+    out["Campaña"] = df[ccol] if ccol else ""
+    gcol = next((cols[c] for c in cols if "grupo" in c), None)
+    out["Grupo"] = df[gcol] if gcol else ""
+    chcol = next((cols[c] for c in cols if "cambio" in c), None)
+    out["Cambios"] = df[chcol] if chcol else ""
+    out = out.dropna(subset=["Fecha"])
+    if out.empty:
+        return None
+    out["Mes"] = out["Fecha"].dt.to_period("M").astype(str)
+    return out.sort_values("Fecha").reset_index(drop=True)
+
+
 def parse_gsc_upload(uploaded_file):
     """
     Punto de entrada unico. Acepta ZIP / CSV / XLSX de GSC.
@@ -871,6 +942,85 @@ def tabla_rendimiento(df, top=100):
     cols = ["Término", "Vertical", "Clics", "Impresiones", "CTR %", "Posicion"]
     d = d[cols].rename(columns={"Posicion": "Posición"})
     return d.sort_values("Clics", ascending=False).head(top)
+
+
+# --- Estrategia de contenido: pensamiento crítico sobre datos REALES + sector ---
+# Temas con tráfico probado en el mundo camper (patrones de intención que funcionan
+# en el sector: rutas locales, normativa/pernocta, comparativas, guías prácticas).
+TEMAS_SECTOR_CAMPER = [
+    ("rutas y escapadas locales", "Rutas en camper cerca de Valencia (fin de semana)",
+     "Las guías de rutas por comunidad captan tráfico transaccional local y estacional. "
+     "Refuerza el km/noche y la cercanía a la base de Rafelbunyol."),
+    ("normativa y pernocta", "Dónde pernoctar legalmente en camper en la Comunidad Valenciana",
+     "La duda legal de aparcar/pernoctar es de altísima demanda informacional y fideliza. "
+     "Poca competencia bien resuelta = posiciones rápidas."),
+    ("comparativa de vehículos", "Mini van vs gran volumen: qué camper elegir según tu viaje",
+     "Comparativas que ayudan a decidir capturan usuarios a mitad de embudo y enlazan a fichas."),
+    ("primerizos / cómo funciona", "Primera vez en camper: guía completa para no perderte nada",
+     "Contenido para primerizos amplía el mercado (gente que nunca ha alquilado) y reduce fricción."),
+    ("mascotas", "Viajar en camper con perro: consejos y equipamiento",
+     "El nicho pet-friendly es un diferencial real de Wheely Fog (supl. 35€). Poca competencia."),
+    ("venta / ocasión", "Comprar una camper de ocasión con historial: qué mirar",
+     "Contenido de venta que educa sobre el valor del historial de mantenimiento; madura leads de compra."),
+]
+
+
+def content_strategy_desde_datos(df_q, top_n=6):
+    """Genera propuestas de contenido con pensamiento crítico:
+    1) Oportunidades REALES de los datos GSC (muchas impresiones, mala posición).
+    2) Temas con tráfico probado en el sector camper.
+    Cada propuesta lleva su porqué analítico."""
+    props = []
+    if df_q is not None and not df_q.empty:
+        d = df_q.copy()
+        d["Vertical"] = d["termino"].apply(clasifica_vertical)
+        # Oportunidad = aparece mucho (impresiones) pero mal posicionada (>8) y no es marca
+        op = d[(d["Posicion"] > 8) & (d["Impresiones"] >= 200) & (d["Vertical"] != "MARCA")]
+        op = op.sort_values("Impresiones", ascending=False).head(top_n)
+        for _, r in op.iterrows():
+            props.append({
+                "titulo": f"Contenido para: “{r['termino']}”",
+                "keyword": r["termino"],
+                "vertical": r["Vertical"],
+                "origen": "DATO REAL (GSC)",
+                "metrica": f"{int(r['Impresiones']):,} impresiones/periodo · posición {r['Posicion']:.0f} · CTR {r['CTR']*100:.1f}%",
+                "porque": (f"Ya apareces {int(r['Impresiones']):,} veces por esta búsqueda pero en posición "
+                           f"{r['Posicion']:.0f}: hay demanda comprobada que no capturas. Un artículo enfocado "
+                           "aquí ataca tráfico que Google ya te asocia. Máxima prioridad por dato real."),
+            })
+    # Completar con temas de sector probados si faltan propuestas
+    for tema, titulo, porque in TEMAS_SECTOR_CAMPER:
+        if len(props) >= top_n + 3:
+            break
+        props.append({
+            "titulo": titulo, "keyword": tema,
+            "vertical": clasifica_vertical(titulo),
+            "origen": "PATRÓN DE SECTOR",
+            "metrica": "Tema con demanda probada en el nicho camper",
+            "porque": porque,
+        })
+    return props
+
+
+def sugerencia_foto(keyword, vertical):
+    """Sugiere qué FOTO buscar manualmente (banco libre) + alt text SEO."""
+    k = str(keyword).lower()
+    if vertical == "VENTA":
+        desc = ("Foto real de la camper en venta: exterior limpio + detalle de interior cuidado. "
+                "Evita fondos genéricos; transmite 'fiable y con historial'.")
+        alt = f"Comprar camper de ocasión con historial en Valencia — {keyword}"
+    elif "perro" in k or "mascota" in k:
+        desc = "Foto de un perro asomado o dentro de una camper, ambiente relajado y natural."
+        alt = f"Viajar en camper con perro — {keyword}"
+    elif "ruta" in k or "escapada" in k or "pernocta" in k:
+        desc = ("Camper aparcada en un paraje natural de la Comunidad Valenciana (Albufera, costa, "
+                "montaña), sillas de camping y luz de atardecer.")
+        alt = f"Escapada en camper desde Valencia — {keyword}"
+    else:
+        desc = ("Interior acogedor de camper con cama montada y buena luz, o pareja disfrutando junto "
+                "al vehículo. Aspecto premium y real, no de catálogo.")
+        alt = f"Alquiler de camper en Valencia — {keyword}"
+    return desc, alt
 #    un LLM (Claude tool-use) que razona sobre datos reales.
 # ==========================================
 INTENT_COMPRA = ["comprar", "compra", "segunda mano", "venta", "vender", "ocasion", "km0", "km 0"]
@@ -982,6 +1132,12 @@ if "gsc_index" not in st.session_state:
     st.session_state.gsc_index = []  # lista de (issue, df_urls)
 if "gsc_ts" not in st.session_state:
     st.session_state.gsc_ts = None  # serie temporal (Chart.csv)
+if "ads_changes" not in st.session_state:
+    st.session_state.ads_changes = None  # historial de cambios de Google Ads
+if "file_registry" not in st.session_state:
+    st.session_state.file_registry = []  # [(nombre, seccion, detalle, ts)]
+if "articulos_log" not in st.session_state:
+    st.session_state.articulos_log = []  # cronología de artículos generados
 
 # ==========================================
 # 4. BARRA LATERAL Y FILTROS GLOBALES
@@ -1003,37 +1159,73 @@ with st.sidebar:
     )
     st.divider()
 
-    st.markdown("### 📤 Datos reales de Search Console")
-    st.caption("Sube el **ZIP** de GSC (Rendimiento o Indexación), o CSV/XLSX sueltos.")
-    up_files = st.file_uploader("Arrastra tus archivos de GSC",
+    st.markdown("### 📤 Sube tus archivos (auto-detecta SEO/SEM)")
+    st.caption("**SEO**: ZIP de GSC (Rendimiento/Indexación) o CSV/XLSX. "
+               "**SEM**: 'Informe de historial de cambios' de Google Ads (CSV/XLSX).")
+    up_files = st.file_uploader("Arrastra aquí cualquier archivo",
                                 type=["zip", "csv", "xlsx", "xls"],
                                 accept_multiple_files=True, key="gsc_up")
     if up_files:
         for uf in up_files:
-            r = parse_gsc_upload(uf)
-            if r["queries"] is not None:
-                st.session_state.gsc_queries = r["queries"]
-            if r["pages"] is not None:
-                st.session_state.gsc_pages = r["pages"]
-            if r["index_urls"] is not None:
-                issue = r["index_issue"] or uf.name
-                st.session_state.gsc_index = [x for x in st.session_state.gsc_index
-                                              if x[0] != issue]
-                st.session_state.gsc_index.append((issue, r["index_urls"]))
-            if r.get("timeseries") is not None:
-                st.session_state.gsc_ts = r["timeseries"]
-            st.success(f"{uf.name}: {r['msg']}")
+            seccion, detalle = None, ""
+            # 1) ¿Es historial de cambios de Google Ads? (SEM)
+            es_ads = ("cambio" in uf.name.lower() or "historial" in uf.name.lower()
+                      or "change" in uf.name.lower())
+            ads_df = None
+            if es_ads or uf.name.lower().endswith((".csv", ".xlsx", ".xls")):
+                try:
+                    ads_df = parse_ads_change_history(uf.getvalue(), uf.name)
+                except Exception:
+                    ads_df = None
+            if ads_df is not None and len(ads_df) > 0:
+                st.session_state.ads_changes = ads_df
+                seccion, detalle = "SEM", f"{len(ads_df)} cambios de Ads"
+                st.success(f"🛰️ SEM · {uf.name}: {detalle}")
+            else:
+                # 2) Si no, tratar como GSC (SEO)
+                r = parse_gsc_upload(uf)
+                got = False
+                if r["queries"] is not None:
+                    st.session_state.gsc_queries = r["queries"]; got = True
+                if r["pages"] is not None:
+                    st.session_state.gsc_pages = r["pages"]; got = True
+                if r["index_urls"] is not None:
+                    issue = r["index_issue"] or uf.name
+                    st.session_state.gsc_index = [x for x in st.session_state.gsc_index if x[0] != issue]
+                    st.session_state.gsc_index.append((issue, r["index_urls"])); got = True
+                if r.get("timeseries") is not None:
+                    st.session_state.gsc_ts = r["timeseries"]; got = True
+                if got:
+                    seccion, detalle = "SEO", r["msg"]
+                    st.success(f"📡 SEO · {uf.name}: {r['msg']}")
+                else:
+                    st.warning(f"❓ {uf.name}: {r['msg']}")
+            if seccion:
+                st.session_state.file_registry = [
+                    x for x in st.session_state.file_registry if x[0] != uf.name]
+                st.session_state.file_registry.append(
+                    (uf.name, seccion, detalle, datetime.today().strftime("%Y-%m-%d %H:%M")))
+
+    # Registro de archivos en memoria (para no perder de vista qué hay cargado)
+    if st.session_state.file_registry:
+        st.markdown("##### 🗂️ Archivos en memoria")
+        for nombre, seccion, detalle, ts in st.session_state.file_registry:
+            icono = "🛰️" if seccion == "SEM" else "📡"
+            st.caption(f"{icono} **{seccion}** · {nombre[:28]} · {detalle}")
 
     st.divider()
-    st.markdown("### 📅 Filtro Temporal (SEM)")
+    st.markdown("### 📅 Filtro Temporal (SEM demo)")
     dias_filtro = st.slider("Rango de análisis (días previos):", 7, 90, 30, 1)
     fecha_limite = datetime.today() - timedelta(days=dias_filtro)
     df_sem = df_sem_raw[pd.to_datetime(df_sem_raw["Fecha"]) >= fecha_limite]
 
     st.divider()
-    st.warning("🟡 API Google Ads: sin conectar")
+    if st.session_state.ads_changes is not None:
+        st.success(f"🟢 Google Ads (historial): {len(st.session_state.ads_changes)} cambios")
+    else:
+        st.warning("🟡 Google Ads: sube el historial de cambios")
     if st.session_state.gsc_queries is not None or st.session_state.gsc_pages is not None:
-        st.success("🟢 Search Console: datos cargados (CSV/ZIP)")
+        st.success("🟢 Search Console: datos cargados")
     else:
         st.warning("🟡 Search Console: sin datos (sube el ZIP)")
     st.warning("🟡 GA4: sin conectar")
@@ -1303,6 +1495,102 @@ elif hemisferio == "🛰️ SEM (Performance & Subastas)":
                    "Los de alto CTR y buena posición son candidatos a proteger/escalar en SEM.")
         st.dataframe(tv, use_container_width=True, hide_index=True)
 
+    # --- HISTORIAL DE CAMBIOS DE GOOGLE ADS: frecuencia de trabajo ---
+    st.divider()
+    st.subheader("🗓️ Frecuencia de trabajo en la cuenta (historial de cambios)")
+    ch = st.session_state.ads_changes
+    if ch is None:
+        st.info("Sube el **'Informe de historial de cambios'** de Google Ads (barra lateral) para "
+                "medir con qué frecuencia se ha trabajado la cuenta: cuántos cambios, quién los hizo y cuándo. "
+                "Ideal para auditar la actividad de la agencia.")
+    else:
+        fmin, fmax = ch["Fecha"].min().date(), ch["Fecha"].max().date()
+        st.caption(f"Historial disponible: {fmin} → {fmax} · {len(ch)} cambios totales.")
+
+        modo = st.radio("Modo:", ["Un rango", "Comparar dos rangos"], horizontal=True)
+
+        def resumen_rango(df, ini, fin):
+            d = df[(df["Fecha"].dt.date >= ini) & (df["Fecha"].dt.date <= fin)]
+            dias = max((fin - ini).days + 1, 1)
+            semanas = max(dias / 7, 0.14)
+            n = len(d)
+            dias_activos = d["Fecha"].dt.date.nunique()
+            return {"n": n, "dias": dias, "por_semana": n / semanas,
+                    "dias_activos": dias_activos, "cobertura": dias_activos / dias,
+                    "por_usuario": d["Usuario"].value_counts().to_dict(),
+                    "por_campana": d["Campaña"].value_counts().to_dict(), "df": d}
+
+        def pinta_resumen(r, etiqueta=""):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric(f"Cambios {etiqueta}", r["n"])
+            c2.metric("Media/semana", f"{r['por_semana']:.1f}")
+            c3.metric("Días con actividad", r["dias_activos"])
+            c4.metric("Cobertura", f"{r['cobertura']*100:.0f}%",
+                      help="% de días del rango en los que se tocó algo")
+
+        if modo == "Un rango":
+            col1, col2 = st.columns(2)
+            ini = col1.date_input("Desde:", value=fmin, min_value=fmin, max_value=fmax, key="ads_i1")
+            fin = col2.date_input("Hasta:", value=fmax, min_value=fmin, max_value=fmax, key="ads_f1")
+            if ini <= fin:
+                r = resumen_rango(ch, ini, fin)
+                pinta_resumen(r)
+                # Diagnóstico experto de la cadencia
+                if r["por_semana"] < 1:
+                    st.warning("⚠️ Cadencia **baja**: menos de 1 cambio/semana. Una cuenta de Ads activa "
+                               "suele requerir revisión semanal (negativas, pujas, creatividades). Posible cuenta "
+                               "desatendida o en piloto automático.")
+                elif r["por_semana"] > 8:
+                    st.info("Cadencia **alta**: mucha actividad. Verifica que no sea 'ruido' (cambios pequeños "
+                            "repetidos) sin impacto real en rendimiento.")
+                else:
+                    st.success("Cadencia **saludable** de optimización continua.")
+
+                g1, g2 = st.columns(2)
+                with g1:
+                    st.markdown("**Cambios por mes**")
+                    serie = r["df"].groupby("Mes").size()
+                    st.bar_chart(serie)
+                with g2:
+                    st.markdown("**Quién trabajó la cuenta**")
+                    st.bar_chart(pd.Series(r["por_usuario"]))
+                with st.expander("Ver detalle de cambios"):
+                    st.dataframe(r["df"][["Fecha", "Usuario", "Campaña", "Cambios"]]
+                                 .sort_values("Fecha", ascending=False),
+                                 use_container_width=True, hide_index=True)
+            else:
+                st.error("La fecha 'Desde' debe ser anterior a 'Hasta'.")
+        else:
+            st.markdown("**Rango A**")
+            a1, a2 = st.columns(2)
+            ia = a1.date_input("A · Desde:", value=fmin, min_value=fmin, max_value=fmax, key="ads_ia")
+            fa = a2.date_input("A · Hasta:", value=fmin + timedelta(days=90), min_value=fmin, max_value=fmax, key="ads_fa")
+            st.markdown("**Rango B**")
+            b1, b2 = st.columns(2)
+            ib = b1.date_input("B · Desde:", value=fmax - timedelta(days=90), min_value=fmin, max_value=fmax, key="ads_ib")
+            fb = b2.date_input("B · Hasta:", value=fmax, min_value=fmin, max_value=fmax, key="ads_fb")
+            if ia <= fa and ib <= fb:
+                ra, rb = resumen_rango(ch, ia, fa), resumen_rango(ch, ib, fb)
+                cA, cB = st.columns(2)
+                with cA:
+                    st.markdown(f"##### 🅰️ {ia} → {fa}")
+                    pinta_resumen(ra, "A")
+                with cB:
+                    st.markdown(f"##### 🅱️ {ib} → {fb}")
+                    pinta_resumen(rb, "B")
+                # Conclusión comparativa
+                if ra["por_semana"] > 0:
+                    var = (rb["por_semana"] - ra["por_semana"]) / ra["por_semana"] * 100
+                    if var <= -30:
+                        st.warning(f"🔻 La actividad **cayó {abs(var):.0f}%** por semana de A a B. "
+                                   "La cuenta se está trabajando menos que antes.")
+                    elif var >= 30:
+                        st.info(f"🔺 La actividad **subió {var:.0f}%** por semana de A a B.")
+                    else:
+                        st.success(f"➡️ Actividad estable entre rangos ({var:+.0f}%/semana).")
+            else:
+                st.error("Revisa las fechas: cada 'Desde' debe ser anterior a su 'Hasta'.")
+
 
 # ==========================================
 # 7. MODULO SEO: CONTENT FACTORY
@@ -1333,40 +1621,70 @@ elif hemisferio == "📝 SEO (Content Factory Orgánico)":
             st.warning("Sin coincidencias. ¡Oportunidad para crear contenido nuevo!")
 
     st.divider()
-    st.subheader("🏭 Fábrica de Contenidos IA")
-    for i, prop in df_proposals.iterrows():
-        with st.container(border=True):
-            st.markdown(f"#### 📌 {prop['Título Propuesto']}")
-            kd = prop["KD"]
-            kd_label = "🟢 Fácil" if kd < 30 else ("🟡 Media" if kd < 60 else "🔴 Difícil")
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Volumen", f"{prop['Vol. Búsqueda (Mes)']:,}")
-            m2.metric("Dificultad", f"{kd}/100", kd_label)
-            m3.metric("Intención", prop["Intención"])
-            st.info(f"💡 **Justificación de ventas:** {prop['Justificacion_Ventas']}")
+    st.subheader("🏭 Fábrica de Contenidos (estrategia sobre datos reales)")
+    dfq_cf = st.session_state.gsc_queries
+    if dfq_cf is not None:
+        st.success("✅ Usando tus datos reales de Search Console para priorizar por demanda comprobada.")
+    else:
+        st.info("💡 Sube el ZIP de GSC para que las propuestas se basen en tus impresiones/posiciones reales. "
+                "Mientras, se muestran temas con demanda probada en el sector camper.")
 
-            # FIX botones anidados: generacion via session_state (no boton dentro de boton)
-            if not st.session_state.articulos.get(i):
-                if st.button("🧠 Generar Artículo y Prompts Visuales", key=f"gen_{i}"):
-                    with st.spinner("La IA está redactando y sesgando el contenido..."):
-                        st.session_state.articulos[i] = generate_ai_blog(prop["Keyword Objetivo"], prop["Título Propuesto"])
+    propuestas = content_strategy_desde_datos(dfq_cf, top_n=6)
+    for i, prop in enumerate(propuestas):
+        with st.container(border=True):
+            badge = "🟢 DATO REAL" if prop["origen"] == "DATO REAL (GSC)" else "🔵 PATRÓN SECTOR"
+            vcolor = VERT_COLORS.get(prop["vertical"], "#5f6368")
+            st.markdown(f"#### 📌 {prop['titulo']}")
+            st.markdown(f"<span class='tag' style='background:{vcolor};color:#fff;'>{prop['vertical']}</span> "
+                        f"<span class='tag tag-info'>{badge}</span> "
+                        f"<code style='font-size:.78rem'>{prop['keyword']}</code>", unsafe_allow_html=True)
+            st.caption(f"📊 {prop['metrica']}")
+            st.info(f"🧠 **Por qué este contenido:** {prop['porque']}")
+
+            akey = f"cf_art_{i}"
+            if not st.session_state.get(akey):
+                if st.button("🧠 Generar artículo", key=f"gen_{i}"):
+                    with st.spinner("Redactando con los datos reales de Wheely Fog..."):
+                        html = generate_ai_blog(prop["keyword"], prop["titulo"])
+                        st.session_state[akey] = html
+                        # Cronología de artículos
+                        st.session_state.articulos_log = [
+                            x for x in st.session_state.articulos_log if x["titulo"] != prop["titulo"]]
+                        st.session_state.articulos_log.append({
+                            "titulo": prop["titulo"], "keyword": prop["keyword"],
+                            "vertical": prop["vertical"], "origen": prop["origen"],
+                            "fecha": datetime.today().strftime("%Y-%m-%d %H:%M"),
+                            "html": html})
                     st.rerun()
             else:
-                st.markdown(f'<div class="blog-container">{st.session_state.articulos[i]}</div>', unsafe_allow_html=True)
-                bc1, bc2 = st.columns([2, 1])
-                if not st.session_state.aprobados.get(i):
-                    if bc1.button("📤 Aprobar y Enviar a Web", key=f"appr_{i}"):
-                        st.session_state.aprobados[i] = True
-                        st.rerun()
-                else:
-                    bc1.success("✓ Draft enviado a la cola de publicación.")
-                if bc2.button("Descartar", key=f"disc_{i}"):
-                    st.session_state.articulos[i] = None
-                    st.session_state.aprobados[i] = False
+                st.markdown(f'<div class="blog-container">{st.session_state[akey]}</div>',
+                            unsafe_allow_html=True)
+                # Sugerencia de FOTO a buscar manualmente
+                desc, alt = sugerencia_foto(prop["keyword"], prop["vertical"])
+                st.markdown(f"""<div class="img-suggestion">📸 <b>Qué foto buscar (banco libre, sin copyright):</b><br>
+                {desc}<br><i>Alt text SEO sugerido: {alt}</i></div>""", unsafe_allow_html=True)
+                if st.button("Descartar", key=f"disc_{i}"):
+                    st.session_state[akey] = None
                     st.rerun()
 
+    # --- CRONOLOGÍA de artículos generados ---
     st.divider()
-    st.subheader("📈 Mapa de Competitividad SEO")
+    st.subheader("🕒 Cronología de artículos")
+    if not st.session_state.articulos_log:
+        st.caption("Aún no has generado artículos. Los que crees quedarán aquí ordenados por fecha "
+                   "(dentro de esta sesión).")
+    else:
+        log = sorted(st.session_state.articulos_log, key=lambda x: x["fecha"], reverse=True)
+        st.caption(f"{len(log)} artículos generados en esta sesión (más reciente arriba).")
+        for a in log:
+            vcolor = VERT_COLORS.get(a["vertical"], "#5f6368")
+            with st.expander(f"📄 {a['fecha']} · {a['titulo']} [{a['vertical']}]"):
+                st.markdown(f"<span class='tag' style='background:{vcolor};color:#fff;'>{a['vertical']}</span> "
+                            f"<code>{a['keyword']}</code> · origen: {a['origen']}", unsafe_allow_html=True)
+                st.markdown(f'<div class="blog-container">{a["html"]}</div>', unsafe_allow_html=True)
+
+    st.divider()
+    st.subheader("📈 Mapa de Competitividad SEO (demo)")
     fig_seo = px.scatter(df_seo, x="Dificultad (KD)", y="Tráfico Mensual", size="Volumen Keyword",
                          color="Tasa Conversión", hover_name="Palabra Clave Principal",
                          color_continuous_scale="Greens", size_max=50,
