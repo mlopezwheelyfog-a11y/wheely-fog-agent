@@ -177,8 +177,8 @@ def load_cross_channel_matrix():
         {"Keyword": "alquiler camper valencia", "SEO Posición": 2.4, "SEO Tráfico": 3100, "SEM Gasto (€)": 1450.20, "SEM ROAS": 4.8, "Estado": "🔥 Rendimiento Líder", "Acción": "Mantener Inversión"},
         {"Keyword": "camper santorini alquiler", "SEO Posición": 2.1, "SEO Tráfico": 1100, "SEM Gasto (€)": 810.50, "SEM ROAS": 6.5, "Estado": "🔥 Rendimiento Líder", "Acción": "Escalar Presupuesto"},
         {"Keyword": "rutas camper cerca de valencia", "SEO Posición": 1.5, "SEO Tráfico": 1400, "SEM Gasto (€)": 285.10, "SEM ROAS": 1.2, "Estado": "🌱 Optimizar SEO", "Acción": "Reducir Puja SEM"},
-        {"Keyword": "comprar camper segunda mano", "SEO Posición": 48.0, "SEO Tráfico": 5, "SEM Gasto (€)": 910.40, "SEM ROAS": 0.0, "Estado": "💸 Fuga Absoluta", "Acción": "Negativizar Exacta"},
-        {"Keyword": "camperizacion valencia", "SEO Posición": 14.5, "SEO Tráfico": 80, "SEM Gasto (€)": 495.00, "SEM ROAS": 0.4, "Estado": "💸 Fuga Absoluta", "Acción": "Negativizar Frase"},
+        {"Keyword": "comprar camper segunda mano", "SEO Posición": 48.0, "SEO Tráfico": 5, "SEM Gasto (€)": 910.40, "SEM ROAS": 0.0, "Estado": "🛒 Vertical Venta", "Acción": "Campaña de venta propia (/venta)"},
+        {"Keyword": "camperizacion valencia", "SEO Posición": 14.5, "SEO Tráfico": 80, "SEM Gasto (€)": 495.00, "SEM ROAS": 0.4, "Estado": "🔧 Pre-lanzamiento", "Acción": "Captar lista de espera, puja mínima"},
         {"Keyword": "wheely fog", "SEO Posición": 1.0, "SEO Tráfico": 5000, "SEM Gasto (€)": 145.00, "SEM ROAS": 14.2, "Estado": "🔥 Rendimiento Líder", "Acción": "Proteger Marca"},
         {"Keyword": "camper barata valencia", "SEO Posición": 9.2, "SEO Tráfico": 110, "SEM Gasto (€)": 1280.60, "SEM ROAS": 3.1, "Estado": "🌱 Optimizar SEO", "Acción": "Crear Landing SEO"},
     ])
@@ -1048,14 +1048,29 @@ def build_recommendations(df_cross, df_seo):
         roas = r["SEM ROAS"]
         pos = r["SEO Posición"]
 
-        # R1 - CHOQUE DE INTENCION: keyword de compra consumiendo presupuesto de alquiler
+        # R1 - VERTICAL VENTA: NO es fuga (Wheely Fog también vende campers ex-flota).
+        # Solo es problema si el término erosiona el premium ('barato/chollo') o si el
+        # tráfico de compra está cayendo en campañas de ALQUILER (mezcla de verticales).
         if intent == "compra" and gasto > 0:
             rid += 1
-            recs.append(dict(id=rid, sev="alta", canal="SEM", freq="diaria", kw=kw,
-                titulo="Choque de intención: negativizar término de COMPRA",
-                detalle=f'"{kw}" es intención de compra/venta, pero el negocio es alquiler. Quema {gasto:,.2f} €/mes con ROAS {roas:.1f}x. Ese tráfico rebota.',
-                accion=f'Añadir "{kw}" como negativa en concordancia de frase y exacta en todas las campañas de alquiler.',
-                impacto=f"Ahorro estimado: {gasto:,.2f} €/mes"))
+            # ¿término que erosiona posicionamiento premium de la venta?
+            erosiona = ("erosiona_premium" in globals() and erosiona_premium(kw))
+            if erosiona:
+                recs.append(dict(id=rid, sev="media", canal="SEM", freq="semanal", kw=kw,
+                    titulo="Término de compra 'low-cost' que choca con tu venta premium",
+                    detalle=f'"{kw}" busca precio bajo, pero tu flota de venta es ocasión premium con '
+                            f'historial (35k-80k€). Gasta {gasto:,.2f} €/mes con ROAS {roas:.1f}x.',
+                    accion="Refinar el copy hacia 'calidad-historial-precio' y filtrar negativas de saldo "
+                           "('gratis', 'regalada'). NO negativizar 'ocasión/segunda mano/km' (son tu producto).",
+                    impacto="Mejoras la calidad del lead de venta sin perder demanda real"))
+            else:
+                recs.append(dict(id=rid, sev="media", canal="Cross", freq="semanal", kw=kw,
+                    titulo="Tráfico de VENTA: separar de las campañas de alquiler",
+                    detalle=f'"{kw}" es intención de compra legítima (vendemos campers ex-flota con historial). '
+                            f'Gasta {gasto:,.2f} €/mes con ROAS {roas:.1f}x. No es fuga: es otra vertical.',
+                    accion=f'Asegurar que "{kw}" vive en una campaña de VENTA propia (no en alquiler) con su '
+                           'landing /venta y su KPI de lead de compra. Si está en una campaña de alquiler, moverlo.',
+                    impacto="Atribuyes bien el gasto y mides la venta por su propio embudo"))
             continue
 
         # R2 - FUGA: gasto alto y ROAS bajo (sin ser marca)
@@ -1700,14 +1715,18 @@ elif hemisferio == "🔑 Auditoría Cruzada (SEO vs SEM)":
     st.markdown("Identifica canibalización, fugas de presupuesto y rentabilidad neta por keyword.")
 
     lider = int(df_cross["Estado"].str.contains("Líder").sum())
-    fuga = int(df_cross["Estado"].str.contains("Fuga").sum())
+    venta = int(df_cross["Estado"].str.contains("Venta").sum())
     optim = int(df_cross["Estado"].str.contains("Optimizar").sum())
     c1, c2, c3 = st.columns(3)
     with c1: render_metric("Keywords Eficientes", str(lider), "cross")
-    with c2: render_metric("Fugas Críticas", str(fuga), "cross", "Requiere Acción", "down")
+    with c2: render_metric("Términos de Venta", str(venta), "cross", "Embudo propio", "up")
     with c3: render_metric("Oportunidades SEO", str(optim), "cross")
 
-    st.error("🚨 **Fuga de caja:** términos de compra ('comprar camper segunda mano') consumen +1.400 €/mes en SEM con ROAS 0.0x. Al no dedicarte a la venta, ese tráfico rebota. Negativizar términos de compra en concordancia amplia y de frase.")
+    st.info("🔀 **Wheely Fog opera dos verticales paralelas: ALQUILER y VENTA de campers ex-flota.** "
+            "El tráfico de compra ('comprar camper', 'ocasión', 'segunda mano', 'km') NO es una fuga: es la "
+            "vertical de venta, que trabaja en su propio embudo. Lo que sí hay que vigilar es (1) que la venta "
+            "tenga campañas y landing propias (/venta), separadas del alquiler, y (2) los términos 'low-cost' "
+            "('barato', 'chollo'), que chocan con el posicionamiento premium de la flota de venta.")
 
     st.divider()
     st.subheader("📊 Matriz Estratégica")
@@ -1720,7 +1739,8 @@ elif hemisferio == "🔑 Auditoría Cruzada (SEO vs SEM)":
     st.caption("Eje X invertido: la izquierda es el Top 1 de Google.")
     fig_q = px.scatter(df_cross, x="SEO Posición", y="SEM ROAS", size="SEM Gasto (€)",
                        color="Estado", hover_name="Keyword", size_max=55,
-                       color_discrete_map={"🔥 Rendimiento Líder": COLORS["seo"], "🌱 Optimizar SEO": COLORS["cross"], "💸 Fuga Absoluta": COLORS["sem"]})
+                       color_discrete_map={"🔥 Rendimiento Líder": COLORS["seo"], "🌱 Optimizar SEO": COLORS["cross"],
+                                           "🛒 Vertical Venta": VERT_COLORS["VENTA"], "🔧 Pre-lanzamiento": VERT_COLORS["CAMPERIZACION"]})
     fig_q.update_xaxes(autorange="reversed", title="Posición en Google (← mejor)")
     fig_q.update_yaxes(title="ROAS SEM")
     st.plotly_chart(fig_q, use_container_width=True)
