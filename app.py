@@ -474,9 +474,12 @@ def _parse_fecha_es(s):
         except Exception:
             return pd.NaT
     try:
-        return pd.to_datetime(s, dayfirst=True)
+        return pd.to_datetime(s)
     except Exception:
-        return pd.NaT
+        try:
+            return pd.to_datetime(s, dayfirst=True)
+        except Exception:
+            return pd.NaT
 
 
 def _parse_ads_df(df):
@@ -751,6 +754,344 @@ def fetch_google_sheet(url_or_id, worksheet_name=None):
     if df2 is not None:
         return df2, f"Leída con cuenta de servicio ({len(df2)} filas)", "privada"
     return None, f"{err}\n{err2 if err2 else ''}".strip(), None
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_fetch_google_sheet(url_or_id, worksheet_name=None):
+    """Envoltorio cacheado (10 min) de fetch_google_sheet, para no volver a
+    pedirle la hoja a Google en cada rerun de Streamlit (cada clic/input
+    dispara un rerun completo del script)."""
+    return fetch_google_sheet(url_or_id, worksheet_name)
+
+
+# ==========================================
+# 2.d LECTOR DE EXPORTACIONES COMPLETAS DE GOOGLE ADS
+#     Formato real detectado en "WheelyFog - Google Ads Export.xlsx": un
+#     libro/hoja con varias pestañas -> Campañas (performance diaria),
+#     Términos_Búsqueda, Palabras_Clave, Negativas e Historial_Cambios. Esto
+#     es mucho mas rico que el "historial de cambios" que se leia antes (que
+#     solo decia CUANDO se toco la cuenta, no CUANTO se gasto ni que retorno).
+#     Con esto el modulo SEM deja de decir "sin datos reales" y pasa a
+#     mostrar gasto, ROAS y conversiones REALES.
+#     La deteccion es por COLUMNAS, no por el nombre de la pestaña: funciona
+#     aunque el usuario renombre las pestañas de su Google Sheet.
+# ==========================================
+DEFAULT_GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1D8v9n13CbbUJnUkzL7xhssxJUUqrDMtNefIPDdnCBUg/edit"
+ADS_EXPORT_SHEET_NAMES = {
+    "campañas": "Campañas",
+    "terminos": "Términos_Búsqueda",
+    "keywords": "Palabras_Clave",
+    "negativas": "Negativas",
+    "cambios": "Historial_Cambios",
+}
+
+ADS_PERF_COLMAP = {
+    "campaña": ["campaña", "campaign"],
+    "estado": ["estado", "status"],
+    "grupo": ["grupo de anuncios", "ad group"],
+    "termino": ["término de búsqueda", "termino de busqueda", "search term"],
+    "keyword": ["palabra clave", "keyword"],
+    "concordancia": ["concordancia", "match type"],
+    "fecha": ["fecha", "date"],
+    "coste": ["coste (eur)", "coste (€)", "coste", "cost"],
+    "clics": ["clics", "clicks"],
+    "impresiones": ["impresiones", "impressions"],
+    "conversiones": ["conversiones", "conversions"],
+    "valor_conv": ["valor conversión", "valor conversion", "conv. value", "conversion value"],
+    "nivel": ["nivel", "level"],
+    "termino_neg": ["término negativizado", "termino negativizado", "negative keyword"],
+}
+
+
+def _num_col(df, cols_lower, key, default=0.0):
+    col = _find_col(cols_lower, ADS_PERF_COLMAP[key])
+    if col is None:
+        return pd.Series([default] * len(df), index=df.index)
+    return _to_num(df[col]).fillna(default)
+
+
+def normalize_ads_campaigns(df):
+    """Pestaña de performance DIARIA por campaña (Campaña/Estado/Fecha/Coste/
+    Clics/Impresiones/Conversiones/Valor Conversión). Devuelve None si no
+    encaja (para poder usarse en la autodeteccion sin lanzar excepciones)."""
+    if df is None or df.empty:
+        return None
+    cols = {c.lower().strip(): c for c in df.columns}
+    ccol = _find_col(cols, ADS_PERF_COLMAP["campaña"])
+    fcol = _find_col(cols, ADS_PERF_COLMAP["fecha"])
+    if ccol is None or fcol is None:
+        return None
+    out = pd.DataFrame()
+    out["Campaña"] = df[ccol].astype(str)
+    ecol = _find_col(cols, ADS_PERF_COLMAP["estado"])
+    out["Estado"] = df[ecol].astype(str) if ecol else ""
+    out["Fecha"] = pd.to_datetime(df[fcol], errors="coerce")
+    out["Coste"] = _num_col(df, cols, "coste")
+    out["Clics"] = _num_col(df, cols, "clics").astype(int)
+    out["Impresiones"] = _num_col(df, cols, "impresiones").astype(int)
+    out["Conversiones"] = _num_col(df, cols, "conversiones")
+    out["Valor Conversión"] = _num_col(df, cols, "valor_conv")
+    out = out.dropna(subset=["Fecha"])
+    if out.empty:
+        return None
+    out["Mes"] = out["Fecha"].dt.to_period("M").astype(str)
+    return out.sort_values("Fecha").reset_index(drop=True)
+
+
+def normalize_ads_search_terms(df):
+    """Pestaña de términos de búsqueda reales que han disparado anuncios
+    (Campaña/Grupo/Término de búsqueda/Fecha/métricas). Clasifica cada
+    término por vertical de negocio (ALQUILER/VENTA/MARCA/...)."""
+    if df is None or df.empty:
+        return None
+    cols = {c.lower().strip(): c for c in df.columns}
+    tcol = _find_col(cols, ADS_PERF_COLMAP["termino"])
+    if tcol is None:
+        return None
+    out = pd.DataFrame()
+    out["Término"] = df[tcol].astype(str)
+    ccol = _find_col(cols, ADS_PERF_COLMAP["campaña"])
+    out["Campaña"] = df[ccol].astype(str) if ccol else ""
+    gcol = _find_col(cols, ADS_PERF_COLMAP["grupo"])
+    out["Grupo"] = df[gcol].astype(str) if gcol else ""
+    fcol = _find_col(cols, ADS_PERF_COLMAP["fecha"])
+    out["Fecha"] = pd.to_datetime(df[fcol], errors="coerce") if fcol else pd.NaT
+    out["Coste"] = _num_col(df, cols, "coste")
+    out["Clics"] = _num_col(df, cols, "clics").astype(int)
+    out["Impresiones"] = _num_col(df, cols, "impresiones").astype(int)
+    out["Conversiones"] = _num_col(df, cols, "conversiones")
+    out["Valor Conversión"] = _num_col(df, cols, "valor_conv")
+    out["Vertical"] = out["Término"].apply(clasifica_vertical)
+    return out
+
+
+def normalize_ads_keywords(df):
+    """Pestaña de palabras clave GESTIONADAS (las que has dado de alta tú,
+    con su concordancia y estado), distinta de los términos de búsqueda
+    reales que las disparan."""
+    if df is None or df.empty:
+        return None
+    cols = {c.lower().strip(): c for c in df.columns}
+    kcol = _find_col(cols, ADS_PERF_COLMAP["keyword"])
+    if kcol is None:
+        return None
+    out = pd.DataFrame()
+    out["Palabra clave"] = df[kcol].astype(str)
+    ccol = _find_col(cols, ADS_PERF_COLMAP["campaña"])
+    out["Campaña"] = df[ccol].astype(str) if ccol else ""
+    gcol = _find_col(cols, ADS_PERF_COLMAP["grupo"])
+    out["Grupo"] = df[gcol].astype(str) if gcol else ""
+    mcol = _find_col(cols, ADS_PERF_COLMAP["concordancia"])
+    out["Concordancia"] = df[mcol].astype(str) if mcol else ""
+    ecol = _find_col(cols, ADS_PERF_COLMAP["estado"])
+    out["Estado"] = df[ecol].astype(str) if ecol else ""
+    out["Coste"] = _num_col(df, cols, "coste")
+    out["Clics"] = _num_col(df, cols, "clics").astype(int)
+    out["Impresiones"] = _num_col(df, cols, "impresiones").astype(int)
+    out["Conversiones"] = _num_col(df, cols, "conversiones")
+    out["Valor Conversión"] = _num_col(df, cols, "valor_conv")
+    out["Vertical"] = out["Palabra clave"].apply(clasifica_vertical)
+    return out
+
+
+def normalize_ads_negatives(df):
+    """Pestaña de palabras clave negativas (a nivel cuenta/campaña/grupo)."""
+    if df is None or df.empty:
+        return None
+    cols = {c.lower().strip(): c for c in df.columns}
+    ncol = _find_col(cols, ADS_PERF_COLMAP["termino_neg"])
+    if ncol is None:
+        return None
+    out = pd.DataFrame()
+    out["Término negativizado"] = df[ncol].astype(str)
+    lvlcol = _find_col(cols, ADS_PERF_COLMAP["nivel"])
+    out["Nivel"] = df[lvlcol].astype(str) if lvlcol else ""
+    ccol = _find_col(cols, ADS_PERF_COLMAP["campaña"])
+    out["Campaña"] = df[ccol].astype(str) if ccol else ""
+    mcol = _find_col(cols, ADS_PERF_COLMAP["concordancia"])
+    out["Concordancia"] = df[mcol].astype(str) if mcol else ""
+    return out
+
+
+def agg_ads_performance(df, group_cols):
+    """Agrega un DataFrame de performance de Ads (Campañas o Términos, en
+    formato largo con una fila por fecha) por las columnas indicadas, sumando
+    métricas y calculando ROAS (Valor Conversión / Coste) y CPA (Coste /
+    Conversiones) por grupo. Devuelve None si el DataFrame es None/vacío."""
+    if df is None or df.empty:
+        return None
+    agg = df.groupby(group_cols, as_index=False).agg(
+        Coste=("Coste", "sum"), Clics=("Clics", "sum"), Impresiones=("Impresiones", "sum"),
+        Conversiones=("Conversiones", "sum"), **{"Valor Conversión": ("Valor Conversión", "sum")},
+    )
+    agg["ROAS"] = agg.apply(lambda r: (r["Valor Conversión"] / r["Coste"]) if r["Coste"] > 0 else 0.0, axis=1)
+    agg["CPA"] = agg.apply(lambda r: (r["Coste"] / r["Conversiones"]) if r["Conversiones"] > 0 else np.nan, axis=1)
+    return agg
+
+
+def build_real_sem_recommendations(df_terms_agg, df_gsc_queries):
+    """Recomendaciones sobre CRUCE REAL: gasto/ROAS reales de Google Ads
+    (Términos_Búsqueda agregado) frente a posición orgánica real de Search
+    Console, por el mismo término exacto. Solo se genera cuando hay datos
+    reales de AMBOS lados; si falta alguno, devuelve lista vacía (no rellena
+    con nada sintético)."""
+    recs = []
+    if df_terms_agg is None or df_terms_agg.empty:
+        return recs
+    rid = 0
+
+    def add(sev, canal, titulo, detalle, accion, impacto, kw, vertical):
+        nonlocal rid
+        rid += 1
+        recs.append(dict(id=f"r{rid}", sev=sev, canal=canal, freq="semanal", kw=kw,
+                         vertical=vertical, titulo=titulo, detalle=detalle,
+                         accion=accion, impacto=impacto))
+
+    gsc_pos = {}
+    if df_gsc_queries is not None and not df_gsc_queries.empty:
+        gsc_pos = df_gsc_queries.set_index(df_gsc_queries["termino"].str.lower())["Posicion"].to_dict()
+
+    for _, r in df_terms_agg.iterrows():
+        kw = r["Término"]
+        vertical = r.get("Vertical", clasifica_vertical(kw))
+        es_marca = vertical == "MARCA"
+        pos_organica = gsc_pos.get(str(kw).lower())
+
+        if es_marca:
+            if r["Coste"] > 0:
+                add("info", "SEM", "Proteger marca (dato real, NO pausar)",
+                    f'"{kw}" — gasto real {r["Coste"]:,.2f} €, ROAS real {r["ROAS"]:.1f}x.',
+                    "Mantener la campaña de marca activa: defenderla cuesta poco frente al riesgo "
+                    "de que un competidor o plataforma P2P puje tu marca.",
+                    "Blindas tu tráfico de mayor conversión (dato real)", kw, vertical)
+            continue
+
+        if r["Coste"] > 50 and r["ROAS"] < 1:
+            add("alta", "SEM", "Fuga de presupuesto REAL (ROAS < 1)",
+                f'"{kw}" ha gastado {r["Coste"]:,.2f} € reales con ROAS {r["ROAS"]:.2f}x '
+                f'({int(r["Conversiones"])} conversiones, {int(r["Clics"])} clics). Pierde dinero en cada clic.',
+                "Pausar el término o bajar puja/concordancia y revisar la landing.",
+                f"Recuperas margen sobre {r['Coste']:,.2f} € reales/periodo", kw, vertical)
+            continue
+
+        if pos_organica is not None and pos_organica <= 3 and r["Coste"] > 30 and r["ROAS"] < 3:
+            add("media", "Cross", "Canibalización REAL: ya top 3 orgánico y pagas el clic",
+                f'"{kw}" está en posición {pos_organica:.1f} orgánica (dato real de GSC) y en SEM '
+                f'gasta {r["Coste"]:,.2f} € con ROAS {r["ROAS"]:.1f}x.',
+                "Reducir puja o pausar: ese clic probablemente lo ganarías gratis en orgánico.",
+                "Recortas gasto redundante con datos reales de ambos canales", kw, vertical)
+            continue
+
+        if r["ROAS"] >= 3 and r["Coste"] > 20:
+            add("info", "SEM", "Rendimiento real fuerte: candidato a escalar",
+                f'"{kw}" — ROAS real {r["ROAS"]:.1f}x sobre {r["Coste"]:,.2f} € gastados.',
+                "Subir puja o presupuesto de este término/grupo de anuncios: el retorno lo soporta.",
+                "Más conversiones reales al mismo ratio de eficiencia", kw, vertical)
+
+    orden = {"alta": 0, "media": 1, "info": 2}
+    return sorted(recs, key=lambda x: orden[x["sev"]])
+
+
+def _looks_like_ads_change_history(cols_lower):
+    """Distingue el 'Historial_Cambios' (auditoria de ediciones en la cuenta)
+    de las pestañas de PERFORMANCE (Campañas/Términos/Keywords), que tambien
+    tienen columna Fecha pero además tienen coste/clics/impresiones."""
+    tiene_fecha = any("fecha" in c for c in cols_lower)
+    tiene_usuario = "usuario" in cols_lower
+    tiene_operacion = any("operaci" in c for c in cols_lower)
+    tiene_metricas = any(k in cols_lower for k in
+                         ["coste (eur)", "coste (€)", "coste", "clics", "impresiones"])
+    return tiene_fecha and (tiene_usuario or tiene_operacion) and not tiene_metricas
+
+
+def _try_parse_ads_change_history(df):
+    """Como _parse_ads_df, pero con el guard de _looks_like_ads_change_history
+    para no confundir una pestaña de performance con el historial de cambios
+    durante la autodeteccion (ambas tienen columna Fecha)."""
+    if df is None or df.empty:
+        return None
+    cols_lower = {c.lower().strip(): c for c in df.columns}
+    if not _looks_like_ads_change_history(cols_lower):
+        return None
+    return _parse_ads_df(df)
+
+
+def _autodetect_ads_workbook(sheet_dict):
+    """Recorre un diccionario {nombre_de_pestaña: DataFrame} (de un XLSX con
+    varias pestañas, o de varias pestañas leidas de Google Sheets) y clasifica
+    cada una como campañas / términos / keywords / negativas / cambios SEGUN
+    SUS COLUMNAS, no segun el nombre de la pestaña -> funciona aunque el
+    usuario haya renombrado las pestañas. Si dos pestañas son del mismo tipo
+    (p.ej. dos meses de Campañas en pestañas separadas), se concatenan."""
+    result = {"campañas": None, "terminos": None, "keywords": None,
+              "negativas": None, "cambios": None}
+    tests = [
+        ("negativas", normalize_ads_negatives),
+        ("keywords", normalize_ads_keywords),
+        ("terminos", normalize_ads_search_terms),
+        ("cambios", _try_parse_ads_change_history),
+        ("campañas", normalize_ads_campaigns),
+    ]
+    for _, df in sheet_dict.items():
+        if df is None or df.empty:
+            continue
+        for tipo, fn in tests:
+            try:
+                out = fn(df)
+            except Exception:
+                out = None
+            if out is not None and not out.empty:
+                if result[tipo] is None:
+                    result[tipo] = out
+                else:
+                    result[tipo] = pd.concat([result[tipo], out], ignore_index=True)
+                break
+    return result
+
+
+def auto_load_default_sheet():
+    """Se ejecuta UNA vez por sesión (ver el guard en la barra lateral):
+    intenta cargar las 5 pestañas conocidas de la exportación de Google Ads
+    desde DEFAULT_GOOGLE_SHEET_URL. No lanza excepciones ni bloquea la app si
+    la hoja no es pública o falta alguna pestaña -> cada resultado (ok/aviso)
+    queda en session_state.auto_load_log para mostrarlo en la barra lateral."""
+    log = []
+    any_ok = False
+    for tipo, tab_name in ADS_EXPORT_SHEET_NAMES.items():
+        df_raw, msg, metodo = _cached_fetch_google_sheet(DEFAULT_GOOGLE_SHEET_URL, tab_name)
+        if df_raw is None:
+            log.append(("warn", f"'{tab_name}': no disponible ({msg.splitlines()[0] if msg else 'sin detalle'})"))
+            continue
+        if tipo == "campañas":
+            out = normalize_ads_campaigns(df_raw)
+            if out is not None:
+                st.session_state.ads_perf_campaigns = out
+        elif tipo == "terminos":
+            out = normalize_ads_search_terms(df_raw)
+            if out is not None:
+                st.session_state.ads_perf_terms = out
+        elif tipo == "keywords":
+            out = normalize_ads_keywords(df_raw)
+            if out is not None:
+                st.session_state.ads_perf_keywords = out
+        elif tipo == "negativas":
+            out = normalize_ads_negatives(df_raw)
+            if out is not None:
+                st.session_state.ads_perf_negatives = out
+        elif tipo == "cambios":
+            out = _parse_ads_df(df_raw)
+            if out is not None:
+                st.session_state.ads_changes = out
+        else:
+            out = None
+        if out is not None and not out.empty:
+            log.append(("ok", f"'{tab_name}': {len(out)} filas"))
+            any_ok = True
+        else:
+            log.append(("warn", f"'{tab_name}': leída pero no reconozco sus columnas"))
+    st.session_state.auto_load_log = log
+    st.session_state.auto_load_attempted = True
+    st.session_state.auto_load_any_ok = any_ok
 
 
 # --- Calendario editorial (Google Sheets) -> cola de la Fabrica de Contenidos ---
@@ -1569,6 +1910,28 @@ if "content_calendar" not in st.session_state:
     st.session_state.content_calendar = None  # calendario editorial (Google Sheets)
 if "content_calendar_url" not in st.session_state:
     st.session_state.content_calendar_url = None
+if "ads_perf_campaigns" not in st.session_state:
+    st.session_state.ads_perf_campaigns = None  # performance diaria real por campaña
+if "ads_perf_terms" not in st.session_state:
+    st.session_state.ads_perf_terms = None  # términos de búsqueda reales (SEM)
+if "ads_perf_keywords" not in st.session_state:
+    st.session_state.ads_perf_keywords = None  # palabras clave gestionadas
+if "ads_perf_negatives" not in st.session_state:
+    st.session_state.ads_perf_negatives = None  # negativas
+if "auto_load_attempted" not in st.session_state:
+    st.session_state.auto_load_attempted = False
+if "auto_load_log" not in st.session_state:
+    st.session_state.auto_load_log = []
+if "auto_load_any_ok" not in st.session_state:
+    st.session_state.auto_load_any_ok = False
+
+# Carga automatica: se intenta UNA vez por sesion (no en cada rerun) leer la
+# Google Sheet por defecto. El usuario puede reintentar desde la barra
+# lateral si la hoja no estaba lista la primera vez (p.ej. si acaba de
+# cambiar el permiso de "Compartir" y quiere forzar una nueva lectura).
+if not st.session_state.auto_load_attempted:
+    with st.spinner("🔄 Cargando datos automáticamente desde Google Sheets..."):
+        auto_load_default_sheet()
 
 # ==========================================
 # 4. BARRA LATERAL Y FILTROS GLOBALES
@@ -1590,6 +1953,25 @@ with st.sidebar:
     )
     st.divider()
 
+    # --- Estado de la carga automatica desde la Google Sheet por defecto ---
+    with st.expander("🔄 Carga automática (Google Sheets)",
+                     expanded=not st.session_state.auto_load_any_ok):
+        st.caption(f"Fuente por defecto: `.../{DEFAULT_GOOGLE_SHEET_URL.split('/d/')[-1][:20]}...`")
+        for nivel, msg in st.session_state.auto_load_log:
+            (st.success if nivel == "ok" else st.warning)(msg)
+        if not st.session_state.auto_load_log:
+            st.caption("Aún no se ha intentado la carga automática.")
+        if st.button("🔄 Reintentar carga automática", key="retry_autoload", use_container_width=True):
+            _cached_fetch_google_sheet.clear()
+            st.session_state.auto_load_attempted = False
+            st.rerun()
+        if not st.session_state.auto_load_any_ok:
+            st.caption("⚠️ Si todas fallan, comprueba que la hoja esté compartida como "
+                      "'Cualquiera con el enlace · Lector' (pruébalo en una ventana de "
+                      "incógnito) y que los nombres de las pestañas coincidan.")
+
+    st.divider()
+
     st.markdown("### 📤 Sube tus archivos (auto-detecta SEO/SEM)")
     st.caption("**SEO**: ZIP de GSC (Rendimiento/Indexación) o CSV/XLSX. "
                "**SEM**: 'Informe de historial de cambios' de Google Ads (CSV/XLSX).")
@@ -1599,38 +1981,73 @@ with st.sidebar:
     if up_files:
         for uf in up_files:
             seccion, detalle = None, ""
-            # 1) ¿Es historial de cambios de Google Ads? (SEM)
-            es_ads = ("cambio" in uf.name.lower() or "historial" in uf.name.lower()
-                      or "change" in uf.name.lower())
-            ads_df = None
-            if es_ads or uf.name.lower().endswith((".csv", ".xlsx", ".xls")):
+            name_lower = uf.name.lower()
+
+            # 1) XLSX/XLS: puede ser la exportacion COMPLETA de Ads (varias
+            #    pestañas: Campañas/Términos/Keywords/Negativas/Historial).
+            #    Se detecta por columnas, pestaña a pestaña, sin depender de
+            #    que el archivo tenga una unica hoja.
+            encontrados = []
+            if name_lower.endswith((".xlsx", ".xls")):
                 try:
-                    ads_df = parse_ads_change_history(uf.getvalue(), uf.name)
+                    xls = pd.ExcelFile(io.BytesIO(uf.getvalue()))
+                    sheet_dict = {s: pd.read_excel(xls, sheet_name=s) for s in xls.sheet_names}
                 except Exception:
-                    ads_df = None
-            if ads_df is not None and len(ads_df) > 0:
-                st.session_state.ads_changes = ads_df
-                seccion, detalle = "SEM", f"{len(ads_df)} cambios de Ads"
+                    sheet_dict = {}
+                detectado = _autodetect_ads_workbook(sheet_dict) if sheet_dict else {}
+                if detectado.get("campañas") is not None:
+                    st.session_state.ads_perf_campaigns = detectado["campañas"]
+                    encontrados.append(f"Campañas ({len(detectado['campañas'])})")
+                if detectado.get("terminos") is not None:
+                    st.session_state.ads_perf_terms = detectado["terminos"]
+                    encontrados.append(f"Términos ({len(detectado['terminos'])})")
+                if detectado.get("keywords") is not None:
+                    st.session_state.ads_perf_keywords = detectado["keywords"]
+                    encontrados.append(f"Keywords ({len(detectado['keywords'])})")
+                if detectado.get("negativas") is not None:
+                    st.session_state.ads_perf_negatives = detectado["negativas"]
+                    encontrados.append(f"Negativas ({len(detectado['negativas'])})")
+                if detectado.get("cambios") is not None:
+                    st.session_state.ads_changes = detectado["cambios"]
+                    encontrados.append(f"Historial ({len(detectado['cambios'])})")
+
+            if encontrados:
+                seccion, detalle = "SEM", " · ".join(encontrados)
                 st.success(f"🛰️ SEM · {uf.name}: {detalle}")
             else:
-                # 2) Si no, tratar como GSC (SEO)
-                r = parse_gsc_upload(uf)
-                got = False
-                if r["queries"] is not None:
-                    st.session_state.gsc_queries = r["queries"]; got = True
-                if r["pages"] is not None:
-                    st.session_state.gsc_pages = r["pages"]; got = True
-                if r["index_urls"] is not None:
-                    issue = r["index_issue"] or uf.name
-                    st.session_state.gsc_index = [x for x in st.session_state.gsc_index if x[0] != issue]
-                    st.session_state.gsc_index.append((issue, r["index_urls"])); got = True
-                if r.get("timeseries") is not None:
-                    st.session_state.gsc_ts = r["timeseries"]; got = True
-                if got:
-                    seccion, detalle = "SEO", r["msg"]
-                    st.success(f"📡 SEO · {uf.name}: {r['msg']}")
+                # 2) ¿Es un CSV/XLSX de historial de cambios "clasico" (una sola
+                #    columna Cambios en texto libre, sin metricas de coste)?
+                es_ads = ("cambio" in name_lower or "historial" in name_lower
+                          or "change" in name_lower)
+                ads_df = None
+                if es_ads or name_lower.endswith((".csv", ".xlsx", ".xls")):
+                    try:
+                        ads_df = parse_ads_change_history(uf.getvalue(), uf.name)
+                    except Exception:
+                        ads_df = None
+                if ads_df is not None and len(ads_df) > 0:
+                    st.session_state.ads_changes = ads_df
+                    seccion, detalle = "SEM", f"{len(ads_df)} cambios de Ads"
+                    st.success(f"🛰️ SEM · {uf.name}: {detalle}")
                 else:
-                    st.warning(f"❓ {uf.name}: {r['msg']}")
+                    # 3) Si no, tratar como GSC (SEO)
+                    r = parse_gsc_upload(uf)
+                    got = False
+                    if r["queries"] is not None:
+                        st.session_state.gsc_queries = r["queries"]; got = True
+                    if r["pages"] is not None:
+                        st.session_state.gsc_pages = r["pages"]; got = True
+                    if r["index_urls"] is not None:
+                        issue = r["index_issue"] or uf.name
+                        st.session_state.gsc_index = [x for x in st.session_state.gsc_index if x[0] != issue]
+                        st.session_state.gsc_index.append((issue, r["index_urls"])); got = True
+                    if r.get("timeseries") is not None:
+                        st.session_state.gsc_ts = r["timeseries"]; got = True
+                    if got:
+                        seccion, detalle = "SEO", r["msg"]
+                        st.success(f"📡 SEO · {uf.name}: {r['msg']}")
+                    else:
+                        st.warning(f"❓ {uf.name}: {r['msg']}")
             if seccion:
                 st.session_state.file_registry = [
                     x for x in st.session_state.file_registry if x[0] != uf.name]
@@ -1642,71 +2059,106 @@ with st.sidebar:
     st.caption("Hojas **públicas** ('Cualquiera con el enlace · Lector') se leen sin credenciales. "
                "Para hojas **privadas**, configura una cuenta de servicio en `st.secrets`.")
     with st.expander("Conectar una hoja", expanded=False):
+        if st.button("Usar la hoja por defecto ↑", key="gs_use_default", use_container_width=True):
+            st.session_state["gs_url_input"] = DEFAULT_GOOGLE_SHEET_URL
         gs_url = st.text_input("URL o ID de Google Sheets:", key="gs_url_input",
                                placeholder="https://docs.google.com/spreadsheets/d/...")
-        gs_tab = st.text_input("Nombre de la pestaña (opcional):", key="gs_tab_input")
+        gs_tab = st.text_input("Nombre de la pestaña (opcional, se ignora en 'Exportación completa'):",
+                               key="gs_tab_input")
         gs_tipo = st.radio(
             "¿Qué contiene esta hoja?",
-            ["Auto-detectar (Consultas / Páginas / Cambios de Ads)",
+            ["Exportación completa de Google Ads (todas las pestañas)",
+             "Auto-detectar una pestaña (Consultas / Páginas / Cambios de Ads)",
              "Calendario editorial (Content Factory)"],
             key="gs_tipo",
         )
         if st.button("📥 Cargar hoja", key="gs_load_btn", use_container_width=True) and gs_url:
-            with st.spinner("Leyendo Google Sheets..."):
-                df_gs, msg_gs, metodo = fetch_google_sheet(gs_url, gs_tab or None)
-            if df_gs is None:
-                st.error(f"❌ {msg_gs}")
-            else:
-                icono_metodo = "🌐" if metodo == "publica" else "🔐"
-                if gs_tipo.startswith("Calendario"):
-                    cal = normalize_content_calendar(df_gs)
-                    if cal is None:
-                        st.error("No encuentro columna de Título ni Keyword. Revisa las cabeceras de la hoja "
-                                 "(admite variantes: 'Título', 'Keyword', 'Palabra clave', 'Estado'...).")
-                    else:
-                        st.session_state.content_calendar = cal
-                        st.session_state.content_calendar_url = gs_url
-                        st.success(f"{icono_metodo} Calendario cargado: {len(cal)} artículos ({msg_gs}).")
-                        st.session_state.file_registry = [
-                            x for x in st.session_state.file_registry if x[0] != "Google Sheets · Calendario"]
-                        st.session_state.file_registry.append(
-                            ("Google Sheets · Calendario", "SEO", f"{len(cal)} filas",
-                             datetime.today().strftime("%Y-%m-%d %H:%M")))
-                        st.rerun()
+            if gs_tipo.startswith("Exportación completa"):
+                with st.spinner("Leyendo las 5 pestañas de Google Ads..."):
+                    encontrados = []
+                    for tipo, tab_name in ADS_EXPORT_SHEET_NAMES.items():
+                        df_raw, msg_t, metodo = _cached_fetch_google_sheet(gs_url, tab_name)
+                        if df_raw is None:
+                            continue
+                        fn = {"campañas": normalize_ads_campaigns, "terminos": normalize_ads_search_terms,
+                              "keywords": normalize_ads_keywords, "negativas": normalize_ads_negatives,
+                              "cambios": _parse_ads_df}[tipo]
+                        out = fn(df_raw)
+                        if out is None or out.empty:
+                            continue
+                        setattr_key = {"campañas": "ads_perf_campaigns", "terminos": "ads_perf_terms",
+                                      "keywords": "ads_perf_keywords", "negativas": "ads_perf_negatives",
+                                      "cambios": "ads_changes"}[tipo]
+                        st.session_state[setattr_key] = out
+                        encontrados.append(f"{tab_name} ({len(out)})")
+                if encontrados:
+                    st.success(f"🛰️ SEM · " + " · ".join(encontrados))
+                    st.session_state.file_registry = [
+                        x for x in st.session_state.file_registry if x[0] != "Google Sheets · Ads (completo)"]
+                    st.session_state.file_registry.append(
+                        ("Google Sheets · Ads (completo)", "SEM", " · ".join(encontrados),
+                         datetime.today().strftime("%Y-%m-%d %H:%M")))
+                    st.rerun()
                 else:
-                    ads_df = _parse_ads_df(df_gs)
-                    if ads_df is not None and len(ads_df) > 0:
-                        st.session_state.ads_changes = ads_df
-                        st.success(f"{icono_metodo} 🛰️ SEM · {len(ads_df)} cambios de Ads ({msg_gs}).")
-                        st.session_state.file_registry = [
-                            x for x in st.session_state.file_registry if x[0] != "Google Sheets · Ads"]
-                        st.session_state.file_registry.append(
-                            ("Google Sheets · Ads", "SEM", f"{len(ads_df)} cambios",
-                             datetime.today().strftime("%Y-%m-%d %H:%M")))
-                        st.rerun()
-                    else:
-                        r = _classify_and_normalize_df(df_gs)
-                        got = False
-                        if r["queries"] is not None:
-                            st.session_state.gsc_queries = r["queries"]; got = True
-                        if r["pages"] is not None:
-                            st.session_state.gsc_pages = r["pages"]; got = True
-                        if r["index_urls"] is not None:
-                            issue = r["index_issue"] or "Google Sheets"
-                            st.session_state.gsc_index = [x for x in st.session_state.gsc_index if x[0] != issue]
-                            st.session_state.gsc_index.append((issue, r["index_urls"])); got = True
-                        if r.get("timeseries") is not None:
-                            st.session_state.gsc_ts = r["timeseries"]; got = True
-                        if got:
-                            st.success(f"{icono_metodo} 📡 SEO · {r['msg']} ({msg_gs}).")
+                    st.error("❌ No he podido leer ninguna de las 5 pestañas esperadas "
+                             f"({', '.join(ADS_EXPORT_SHEET_NAMES.values())}). Revisa que la hoja "
+                             "sea pública y que esos sean los nombres reales de las pestañas.")
+            else:
+                with st.spinner("Leyendo Google Sheets..."):
+                    df_gs, msg_gs, metodo = _cached_fetch_google_sheet(gs_url, gs_tab or None)
+                if df_gs is None:
+                    st.error(f"❌ {msg_gs}")
+                else:
+                    icono_metodo = "🌐" if metodo == "publica" else "🔐"
+                    if gs_tipo.startswith("Calendario"):
+                        cal = normalize_content_calendar(df_gs)
+                        if cal is None:
+                            st.error("No encuentro columna de Título ni Keyword. Revisa las cabeceras de la "
+                                     "hoja (admite variantes: 'Título', 'Keyword', 'Palabra clave', 'Estado'...).")
+                        else:
+                            st.session_state.content_calendar = cal
+                            st.session_state.content_calendar_url = gs_url
+                            st.success(f"{icono_metodo} Calendario cargado: {len(cal)} artículos ({msg_gs}).")
                             st.session_state.file_registry = [
-                                x for x in st.session_state.file_registry if x[0] != "Google Sheets · SEO"]
+                                x for x in st.session_state.file_registry if x[0] != "Google Sheets · Calendario"]
                             st.session_state.file_registry.append(
-                                ("Google Sheets · SEO", "SEO", r["msg"],
+                                ("Google Sheets · Calendario", "SEO", f"{len(cal)} filas",
+                                 datetime.today().strftime("%Y-%m-%d %H:%M")))
+                            st.rerun()
+                    else:
+                        ads_df = _parse_ads_df(df_gs)
+                        if ads_df is not None and len(ads_df) > 0:
+                            st.session_state.ads_changes = ads_df
+                            st.success(f"{icono_metodo} 🛰️ SEM · {len(ads_df)} cambios de Ads ({msg_gs}).")
+                            st.session_state.file_registry = [
+                                x for x in st.session_state.file_registry if x[0] != "Google Sheets · Ads"]
+                            st.session_state.file_registry.append(
+                                ("Google Sheets · Ads", "SEM", f"{len(ads_df)} cambios",
                                  datetime.today().strftime("%Y-%m-%d %H:%M")))
                             st.rerun()
                         else:
-                            st.warning(f"❓ {r['msg']}")
+                            r = _classify_and_normalize_df(df_gs)
+                            got = False
+                            if r["queries"] is not None:
+                                st.session_state.gsc_queries = r["queries"]; got = True
+                            if r["pages"] is not None:
+                                st.session_state.gsc_pages = r["pages"]; got = True
+                            if r["index_urls"] is not None:
+                                issue = r["index_issue"] or "Google Sheets"
+                                st.session_state.gsc_index = [x for x in st.session_state.gsc_index if x[0] != issue]
+                                st.session_state.gsc_index.append((issue, r["index_urls"])); got = True
+                            if r.get("timeseries") is not None:
+                                st.session_state.gsc_ts = r["timeseries"]; got = True
+                            if got:
+                                st.success(f"{icono_metodo} 📡 SEO · {r['msg']} ({msg_gs}).")
+                                st.session_state.file_registry = [
+                                    x for x in st.session_state.file_registry if x[0] != "Google Sheets · SEO"]
+                                st.session_state.file_registry.append(
+                                    ("Google Sheets · SEO", "SEO", r["msg"],
+                                     datetime.today().strftime("%Y-%m-%d %H:%M")))
+                                st.rerun()
+                            else:
+                                st.warning(f"❓ {r['msg']}")
 
         if st.session_state.content_calendar is not None:
             n_pend = int((st.session_state.content_calendar["Estado"].str.lower() == "pendiente").sum())
@@ -1727,10 +2179,15 @@ with st.sidebar:
     df_sem = df_sem_raw[pd.to_datetime(df_sem_raw["Fecha"]) >= fecha_limite]
 
     st.divider()
+    if st.session_state.ads_perf_campaigns is not None:
+        gasto_tot = st.session_state.ads_perf_campaigns["Coste"].sum()
+        st.success(f"🟢 Google Ads (performance real): {gasto_tot:,.0f} € de gasto cargados")
+    else:
+        st.warning("🟡 Google Ads (gasto/ROAS): sin datos reales (sube el Excel o conéctalo por Sheets)")
     if st.session_state.ads_changes is not None:
         st.success(f"🟢 Google Ads (historial): {len(st.session_state.ads_changes)} cambios")
     else:
-        st.warning("🟡 Google Ads: sube el historial de cambios o conéctalo por Sheets")
+        st.warning("🟡 Google Ads (historial): sin datos")
     if st.session_state.gsc_queries is not None or st.session_state.gsc_pages is not None:
         st.success("🟢 Search Console: datos cargados")
     else:
@@ -1750,8 +2207,14 @@ if hemisferio == "🤖 Recomendaciones del Agente":
     st.title("🤖 Recomendaciones del Agente")
     st.markdown("Sugerencias **diarias y semanales** sobre lo que no está funcionando: choque de intención compra/alquiler, fugas de presupuesto, canibalización y oportunidades SEO. Cada acción requiere tu aprobación.")
 
-    # Si hay datos REALES de GSC cargados, esas recomendaciones van primero
-    recomendaciones = build_gsc_recommendations(st.session_state.gsc_queries)
+    # Prioridad de recomendaciones: (1) cruce REAL SEM×SEO, (2) SEO real (GSC),
+    # (3) sintéticas de demostración (solo si falta alguna fuente real).
+    recomendaciones = []
+    if st.session_state.ads_perf_terms is not None:
+        terminos_agg_rec = agg_ads_performance(st.session_state.ads_perf_terms, ["Término", "Vertical"])
+        real_recs = build_real_sem_recommendations(terminos_agg_rec, st.session_state.gsc_queries)
+        recomendaciones += real_recs
+    recomendaciones += build_gsc_recommendations(st.session_state.gsc_queries)
     if st.session_state.gsc_queries is None:
         st.info("💡 Sube el ZIP de Search Console (o conéctalo por Google Sheets) en la barra lateral "
                 "para obtener recomendaciones sobre datos REALES. Mientras tanto, se muestran las de demostración.")
@@ -1945,9 +2408,13 @@ elif hemisferio == "📡 SEO Real (Search Console)":
 elif hemisferio == "🛰️ SEM (Performance & Subastas)":
     st.title("🛰️ Director de Performance (SEM Ads)")
 
-    # --- HONESTIDAD DE DATOS: S/N de lo que realmente tenemos conectado ---
-    tiene_ads = False          # Google Ads API: no conectada
-    tiene_valor = False        # Valor de conversión (pasarela): requiere GA4/Ads
+    df_campañas_real = st.session_state.ads_perf_campaigns
+    df_terminos_real = st.session_state.ads_perf_terms
+    df_keywords_real = st.session_state.ads_perf_keywords
+    df_negativas_real = st.session_state.ads_perf_negatives
+    hay_datos_reales = df_campañas_real is not None and not df_campañas_real.empty
+
+    # --- KPIs REALES (si hay export de Google Ads cargado) ---
     st.markdown("### 📡 ¿Tenemos estos datos? (estado real de las fuentes)")
     d1, d2, d3, d4 = st.columns(4)
     def sn(col, titulo, disponible, nota):
@@ -1956,58 +2423,171 @@ elif hemisferio == "🛰️ SEM (Performance & Subastas)":
             color = "seo" if disponible else "sem"
             render_metric(titulo, estado, color)
             st.caption(nota)
-    sn(d1, "Gasto publicitario", tiene_ads, "Fuente: Google Ads API (sin conectar)")
-    sn(d2, "Retorno / Valor conv.", tiene_valor, "Fuente: GA4 + pasarela (sin conectar)")
-    sn(d3, "ROAS real", tiene_ads and tiene_valor, "Necesita gasto + valor")
-    sn(d4, "CPA real", tiene_ads and tiene_valor, "Necesita gasto + conversiones")
+    sn(d1, "Gasto publicitario", hay_datos_reales,
+       "Fuente: export de Google Ads (Campañas)" if hay_datos_reales else "Sube el Excel o conéctalo por Sheets")
+    sn(d2, "Retorno / Valor conv.", hay_datos_reales,
+       "Columna 'Valor Conversión' del export" if hay_datos_reales else "Requiere el export de Ads")
+    sn(d3, "ROAS real", hay_datos_reales, "Valor Conversión / Coste")
+    sn(d4, "CPA real", hay_datos_reales, "Coste / Conversiones")
 
-    if not (tiene_ads and tiene_valor):
-        st.error("⚠️ **No hay datos reales de SEM todavía.** Antes mostrábamos cifras de retorno/ROAS "
-                 "que eran de demostración (falsas). Para no engañar, ahora se marcan como ❌ No. "
-                 "Para activarlas hay que conectar: **Google Ads API** (gasto, impresiones, clics de pago) "
-                 "y **GA4 + valor de pasarela** (pernocta + seguro + kit) para el retorno.")
+    if not hay_datos_reales:
+        st.error("⚠️ **No hay datos reales de SEM todavía.** Sube tu export de Google Ads (Excel con las "
+                 "pestañas Campañas/Términos_Búsqueda/Palabras_Clave/Negativas/Historial_Cambios) desde la "
+                 "barra lateral, o conéctalo por Google Sheets con la opción 'Exportación completa de Google "
+                 "Ads'. Mientras tanto, esto se marca como ❌ No para no enseñar cifras inventadas.")
         st.info("💡 Lo que **sí** es real y puedes explotar hoy está en **📡 SEO Real (Search Console)**: "
                 "clics, impresiones, CTR y posición orgánicos.")
-
-    with st.expander("Ver todavía la maqueta de demostración (datos NO reales)"):
-        total_gasto = df_sem["Coste (€)"].sum()
-        total_retorno = df_sem["Valor (€)"].sum()
-        total_conv = df_sem["Conversiones"].sum()
-        roas_global = total_retorno / total_gasto if total_gasto > 0 else 0
-        cpa_global = total_gasto / total_conv if total_conv > 0 else 0
-        st.caption("⚠️ Cifras sintéticas para probar la interfaz. No son de wheelyfog.com.")
+        with st.expander("Ver una maqueta de demostración (datos NO reales, solo para probar la interfaz)"):
+            total_gasto = df_sem["Coste (€)"].sum()
+            total_retorno = df_sem["Valor (€)"].sum()
+            total_conv = df_sem["Conversiones"].sum()
+            roas_global = total_retorno / total_gasto if total_gasto > 0 else 0
+            cpa_global = total_gasto / total_conv if total_conv > 0 else 0
+            st.caption("⚠️ Cifras sintéticas para probar la interfaz. No son de wheelyfog.com.")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Gasto (demo)", f"{total_gasto:,.2f} €")
+            c2.metric("Retorno (demo)", f"{total_retorno:,.2f} €")
+            c3.metric("ROAS (demo)", f"{roas_global:.2f}x")
+            c4.metric("CPA (demo)", f"{cpa_global:.2f} €")
+            df_trend = df_sem.groupby("Fecha").agg({"Coste (€)": "sum", "Valor (€)": "sum"}).reset_index()
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=df_trend["Fecha"], y=df_trend["Coste (€)"], name="Inversión (€)", marker_color=COLORS["sem"]))
+            fig.add_trace(go.Scatter(x=df_trend["Fecha"], y=df_trend["Valor (€)"], mode="lines+markers", name="Retorno (€)", line=dict(color=COLORS["global"], width=3)))
+            fig.update_layout(barmode="group", hovermode="x unified", title="Evolución (demo, no real)")
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        total_gasto = df_campañas_real["Coste"].sum()
+        total_retorno = df_campañas_real["Valor Conversión"].sum()
+        total_conv = df_campañas_real["Conversiones"].sum()
+        roas_global = (total_retorno / total_gasto) if total_gasto > 0 else 0
+        cpa_global = (total_gasto / total_conv) if total_conv > 0 else np.nan
+        fmin_c, fmax_c = df_campañas_real["Fecha"].min().date(), df_campañas_real["Fecha"].max().date()
+        st.caption(f"Datos reales: {fmin_c} → {fmax_c} · {len(df_campañas_real):,} filas de performance diaria.")
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Gasto (demo)", f"{total_gasto:,.2f} €")
-        c2.metric("Retorno (demo)", f"{total_retorno:,.2f} €")
-        c3.metric("ROAS (demo)", f"{roas_global:.2f}x")
-        c4.metric("CPA (demo)", f"{cpa_global:.2f} €")
-        df_trend = df_sem.groupby("Fecha").agg({"Coste (€)": "sum", "Valor (€)": "sum"}).reset_index()
+        c1.metric("Gasto real", f"{total_gasto:,.2f} €")
+        c2.metric("Retorno real", f"{total_retorno:,.2f} €")
+        c3.metric("ROAS real", f"{roas_global:.2f}x")
+        c4.metric("CPA real", f"{cpa_global:,.2f} €" if pd.notna(cpa_global) else "n/d")
+
+        st.divider()
+        st.subheader("📈 Evolución real de gasto vs retorno")
+        gran = st.radio("Granularidad:", ["Diaria", "Mensual"], horizontal=True, key="sem_gran")
+        if gran == "Mensual":
+            df_trend_real = df_campañas_real.groupby("Mes", as_index=False).agg(
+                Coste=("Coste", "sum"), **{"Valor Conversión": ("Valor Conversión", "sum")})
+            eje_x = "Mes"
+        else:
+            df_trend_real = df_campañas_real.groupby("Fecha", as_index=False).agg(
+                Coste=("Coste", "sum"), **{"Valor Conversión": ("Valor Conversión", "sum")})
+            eje_x = "Fecha"
         fig = go.Figure()
-        fig.add_trace(go.Bar(x=df_trend["Fecha"], y=df_trend["Coste (€)"], name="Inversión (€)", marker_color=COLORS["sem"]))
-        fig.add_trace(go.Scatter(x=df_trend["Fecha"], y=df_trend["Valor (€)"], mode="lines+markers", name="Retorno (€)", line=dict(color=COLORS["global"], width=3)))
-        fig.update_layout(barmode="group", hovermode="x unified", title="Evolución (demo, no real)")
+        fig.add_trace(go.Bar(x=df_trend_real[eje_x], y=df_trend_real["Coste"], name="Gasto real (€)", marker_color=COLORS["sem"]))
+        fig.add_trace(go.Scatter(x=df_trend_real[eje_x], y=df_trend_real["Valor Conversión"], mode="lines+markers",
+                                 name="Retorno real (€)", line=dict(color=COLORS["global"], width=3)))
+        fig.update_layout(barmode="group", hovermode="x unified", title="Gasto vs retorno — datos reales de Google Ads")
         st.plotly_chart(fig, use_container_width=True)
 
-    # --- TABLA REAL: términos orgánicos que sí funcionan (de GSC) ---
+        st.divider()
+        st.subheader("📊 Rendimiento real por campaña")
+        camp_agg = agg_ads_performance(df_campañas_real, ["Campaña"]).sort_values("Coste", ascending=False)
+        st.dataframe(camp_agg.style.format({"Coste": "{:,.2f} €", "Valor Conversión": "{:,.0f} €",
+                                            "ROAS": "{:.2f}x", "CPA": "{:,.2f} €"}),
+                    use_container_width=True, hide_index=True)
+        fugas = camp_agg[(camp_agg["Coste"] > 50) & (camp_agg["ROAS"] < 1)]
+        if not fugas.empty:
+            st.warning("⚠️ Campañas con ROAS real por debajo de 1x (pierden dinero en cada euro gastado): "
+                      + ", ".join(f"**{r['Campaña']}** ({r['ROAS']:.2f}x)" for _, r in fugas.iterrows()))
+
+    # --- TÉRMINOS DE BÚSQUEDA: real (SEM) + real (SEO/GSC) lado a lado ---
     st.divider()
-    st.subheader("🔍 Términos con buen rendimiento (datos REALES de Search Console)")
+    st.subheader("🔍 Términos de búsqueda: gasto real (SEM) vs posición real (SEO)")
     dfq_sem = st.session_state.gsc_queries
-    if dfq_sem is None:
-        st.info("Sube el ZIP de Search Console (o conéctalo por Google Sheets) en la barra lateral para "
-                "ver aquí tus términos reales, identificar los que mejor convierten en orgánico y decidir "
-                "cuáles reforzar con SEM cuando lo conectes.")
-    else:
-        tabla = tabla_rendimiento(dfq_sem, top=200)
-        f1, f2 = st.columns([2, 1])
-        q_txt = f1.text_input("Filtrar término (ej: valencia, alquiler, ocasión):", key="sem_qf")
-        v_sel = f2.multiselect("Vertical:", list(VERT_COLORS.keys()),
-                               default=list(VERT_COLORS.keys()), key="sem_vf")
-        tv = tabla[tabla["Vertical"].isin(v_sel)]
-        if q_txt:
-            tv = tv[tv["Término"].str.contains(q_txt, case=False, na=False)]
-        st.caption(f"{len(tv)} términos · ordenados por clics reales. "
-                   "Los de alto CTR y buena posición son candidatos a proteger/escalar en SEM.")
-        st.dataframe(tv, use_container_width=True, hide_index=True)
+    terminos_agg = agg_ads_performance(df_terminos_real, ["Término", "Vertical"]) if df_terminos_real is not None else None
+
+    tab_sem_real, tab_seo_real = st.tabs(["🛰️ Gasto real (Google Ads)", "📡 Posición real (Search Console)"])
+    with tab_sem_real:
+        if terminos_agg is None:
+            st.info("Sube el export de Google Ads (pestaña Términos_Búsqueda) o conéctalo por Google Sheets "
+                    "para ver aquí qué términos de búsqueda REALES han gastado presupuesto, con su ROAS.")
+        else:
+            f1, f2 = st.columns([2, 1])
+            q_txt_sem = f1.text_input("Filtrar término (ej: valencia, alquiler, ocasión):", key="sem_real_qf")
+            v_sel_sem = f2.multiselect("Vertical:", list(VERT_COLORS.keys()),
+                                       default=list(VERT_COLORS.keys()), key="sem_real_vf")
+            tv2 = terminos_agg[terminos_agg["Vertical"].isin(v_sel_sem)]
+            if q_txt_sem:
+                tv2 = tv2[tv2["Término"].str.contains(q_txt_sem, case=False, na=False)]
+            tv2 = tv2.sort_values("Coste", ascending=False)
+            st.caption(f"{len(tv2)} términos reales · ordenados por gasto. ROAS < 1x = pierde dinero; "
+                      "ROAS alto con poco gasto = candidato a escalar puja.")
+            st.dataframe(tv2.style.format({"Coste": "{:,.2f} €", "Valor Conversión": "{:,.0f} €",
+                                           "ROAS": "{:.2f}x", "CPA": "{:,.2f} €"}),
+                        use_container_width=True, hide_index=True)
+    with tab_seo_real:
+        if dfq_sem is None:
+            st.info("Sube el ZIP de Search Console (o conéctalo por Google Sheets) en la barra lateral para "
+                    "ver aquí tus términos orgánicos reales.")
+        else:
+            tabla = tabla_rendimiento(dfq_sem, top=200)
+            f1, f2 = st.columns([2, 1])
+            q_txt = f1.text_input("Filtrar término (ej: valencia, alquiler, ocasión):", key="sem_qf")
+            v_sel = f2.multiselect("Vertical:", list(VERT_COLORS.keys()),
+                                   default=list(VERT_COLORS.keys()), key="sem_vf")
+            tv = tabla[tabla["Vertical"].isin(v_sel)]
+            if q_txt:
+                tv = tv[tv["Término"].str.contains(q_txt, case=False, na=False)]
+            st.caption(f"{len(tv)} términos · ordenados por clics reales. "
+                       "Los de alto CTR y buena posición son candidatos a proteger/escalar en SEM.")
+            st.dataframe(tv, use_container_width=True, hide_index=True)
+
+    # --- RECOMENDACIONES REALES (solo si hay SEM real + SEO real, cruzando por termino exacto) ---
+    if terminos_agg is not None and dfq_sem is not None:
+        real_recs = build_real_sem_recommendations(terminos_agg, dfq_sem)
+        if real_recs:
+            st.divider()
+            st.subheader("🧠 Recomendaciones sobre el cruce REAL SEM × SEO")
+            st.caption("Estas mismas recomendaciones (con opción de aplicar/descartar) también aparecen en "
+                      "el módulo 🤖 Recomendaciones del Agente.")
+            for r in real_recs[:5]:
+                tag_class = {"alta": "tag-alta", "media": "tag-media", "info": "tag-info"}[r["sev"]]
+                st.markdown(f"""<div class="rec-card">
+                <span class="tag {tag_class}">{r['sev'].upper()}</span>
+                <span class="tag tag-canal">{r['canal']}</span>
+                <code style="font-size:.78rem;color:#5f6368;">{r['kw']}</code>
+                <div style="font-weight:700;margin-top:4px;">{r['titulo']}</div>
+                <div style="font-size:.9rem;color:#3c4043;margin-top:4px;">{r['detalle']}</div>
+                <div style="font-size:.9rem;margin-top:6px;"><b>Acción:</b> {r['accion']}</div>
+                </div>""", unsafe_allow_html=True)
+
+    # --- PALABRAS CLAVE GESTIONADAS Y NEGATIVAS (si hay export real) ---
+    if df_keywords_real is not None or df_negativas_real is not None:
+        st.divider()
+        st.subheader("🗝️ Palabras clave gestionadas y negativas")
+        tab_kw_real, tab_neg_real = st.tabs(["Palabras clave", "Negativas"])
+        with tab_kw_real:
+            if df_keywords_real is None:
+                st.info("No hay pestaña de Palabras_Clave cargada.")
+            else:
+                kw_agg = agg_ads_performance(
+                    df_keywords_real.assign(**{"Palabra clave": df_keywords_real["Palabra clave"]}),
+                    ["Palabra clave", "Vertical", "Concordancia", "Estado"]
+                ).sort_values("Coste", ascending=False)
+                st.dataframe(kw_agg.style.format({"Coste": "{:,.2f} €", "Valor Conversión": "{:,.0f} €",
+                                                  "ROAS": "{:.2f}x", "CPA": "{:,.2f} €"}),
+                            use_container_width=True, hide_index=True)
+        with tab_neg_real:
+            if df_negativas_real is None:
+                st.info("No hay pestaña de Negativas cargada.")
+            else:
+                st.dataframe(df_negativas_real, use_container_width=True, hide_index=True)
+                if terminos_agg is not None:
+                    ya_negativas = set(df_negativas_real["Término negativizado"].str.lower())
+                    erosionan = terminos_agg[terminos_agg["Término"].apply(erosiona_premium)]
+                    faltan = erosionan[~erosionan["Término"].str.lower().isin(ya_negativas)]
+                    if not faltan.empty:
+                        st.warning("⚠️ Estos términos erosionan el posicionamiento premium de la venta y "
+                                  "**no están en tu lista de negativas todavía**: " +
+                                  ", ".join(f"'{t}'" for t in faltan["Término"].head(8)))
 
     # --- HISTORIAL DE CAMBIOS DE GOOGLE ADS: frecuencia de trabajo ---
     st.divider()
@@ -2275,6 +2855,38 @@ elif hemisferio == "📝 SEO (Content Factory Orgánico)":
 elif hemisferio == "🔑 Auditoría Cruzada (SEO vs SEM)":
     st.title("🔑 Matriz de Auditoría Cross-Channel")
     st.markdown("Identifica canibalización, fugas de presupuesto y rentabilidad neta por keyword.")
+
+    # --- CRUCE REAL: solo si hay gasto real de Ads Y consultas reales de GSC ---
+    if st.session_state.ads_perf_terms is not None and st.session_state.gsc_queries is not None:
+        st.subheader("🔴 Cruce REAL (Google Ads × Search Console)")
+        terminos_agg_cross = agg_ads_performance(st.session_state.ads_perf_terms, ["Término", "Vertical"])
+        gsc_q = st.session_state.gsc_queries.copy()
+        gsc_q["kw_lower"] = gsc_q["termino"].str.lower()
+        terminos_agg_cross["kw_lower"] = terminos_agg_cross["Término"].str.lower()
+        real_cross = terminos_agg_cross.merge(
+            gsc_q[["kw_lower", "Posicion", "Clics", "Impresiones", "CTR"]].rename(
+                columns={"Clics": "SEO Clics", "Impresiones": "SEO Impresiones",
+                         "CTR": "SEO CTR", "Posicion": "SEO Posición"}),
+            on="kw_lower", how="inner").drop(columns=["kw_lower"])
+        if real_cross.empty:
+            st.info("No hay términos que coincidan (texto exacto) entre tu gasto real de Ads y tus "
+                    "consultas reales de Search Console todavía.")
+        else:
+            st.caption(f"{len(real_cross)} términos con dato real en AMBOS canales (mismo texto exacto).")
+            st.dataframe(real_cross.sort_values("Coste", ascending=False).style.format(
+                {"Coste": "{:,.2f} €", "Valor Conversión": "{:,.0f} €", "ROAS": "{:.2f}x",
+                 "CPA": "{:,.2f} €", "SEO Posición": "{:.1f}", "SEO CTR": "{:.1%}"}),
+                use_container_width=True, hide_index=True)
+            canib_real = real_cross[(real_cross["SEO Posición"] <= 3) & (real_cross["ROAS"] < 2) & (real_cross["Coste"] > 20)]
+            if not canib_real.empty:
+                st.warning("⚠️ Canibalización real (Top 3 orgánico + ROAS SEM bajo): " +
+                          ", ".join(f"'{r['Término']}'" for _, r in canib_real.iterrows()))
+        st.divider()
+        st.markdown("##### 📎 Matriz de referencia (demostración — no sustituye al cruce real de arriba)")
+    else:
+        st.info("💡 Sube el export de Google Ads (Términos_Búsqueda) y el ZIP de Search Console — o "
+                "conecta ambos por Google Sheets — para ver aquí un cruce 100% real. Mientras tanto, "
+                "esto muestra una matriz de referencia con datos de demostración.")
 
     lider = int(df_cross["Estado"].str.contains("Líder").sum())
     venta = int(df_cross["Estado"].str.contains("Venta").sum())
