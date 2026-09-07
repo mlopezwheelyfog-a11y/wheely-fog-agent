@@ -2,7 +2,8 @@
 """
 WheelyFog AI - Central Command (Streamlit)
 ============================================================================
-Version corregida del prototipo + modulo de recomendaciones del agente.
+Version corregida del prototipo + modulo de recomendaciones del agente +
+lectura de Google Sheets + Content Factory con redaccion IA real.
 
 FIXES aplicados respecto al original:
   - [BUG botones anidados] Generacion de articulo y aprobacion controladas con
@@ -14,14 +15,40 @@ FIXES aplicados respecto al original:
   - [Honestidad de estado] Los badges de API ya no dicen "Sincronizada"
     decorativo: reflejan que Google Ads / GSC / GA4 estan SIN conectar.
 
-ANADIDO (lo pedido como experto en posicionamiento):
-  - Modulo "Recomendaciones del Agente": sugerencias diarias/semanales con
-    deteccion automatica de CHOQUE DE INTENCION (compra vs alquiler), fugas de
-    presupuesto, canibalizacion y oportunidades SEO. Cada accion se Aplica
-    (cola de aprobacion - humano en el bucle) o se Descarta.
+NUEVO EN ESTA VERSION:
+  - [Google Sheets] Lector universal de Google Sheets: hojas PUBLICAS
+    ("Cualquiera con el enlace - Lector") sin credenciales, y hojas PRIVADAS
+    via cuenta de servicio (gspread) si se configuran credenciales en
+    st.secrets. Sirve tanto para datos SEO/SEM (mismo formato que GSC/Ads)
+    como para un CALENDARIO EDITORIAL que alimenta la Fabrica de Contenidos.
+  - [Content Factory con IA real] "generate_ai_blog" (la version original)
+    era una plantilla fija con 3 ramas hardcodeadas pese a llamarse "motor
+    IA". Ahora hay un motor REAL: generate_ai_blog_llm() llama a la API de
+    Anthropic (Claude), con un system prompt que se ciñe estrictamente a
+    WF_FACTS (para no inventar datos), y devuelve un articulo estructurado:
+    meta title/description, H1, secciones H2, FAQ, CTA, enlaces internos
+    sugeridos y prompt de imagen. Si no hay ANTHROPIC_API_KEY configurada,
+    cae automaticamente a la plantilla original como respaldo (no rompe
+    la app para quien no tenga clave).
+  - [Calendario -> Cola de contenidos] La Fabrica de Contenidos ahora prioriza
+    en este orden: (1) pendientes del calendario editorial (Google Sheets),
+    (2) oportunidades reales de Search Console, (3) patrones de sector. Cada
+    articulo generado desde el calendario marca esa fila como "Generado" y
+    se puede descargar el calendario actualizado.
+  - [Checklist SEO + descargas] Cada articulo generado con IA real muestra
+    una checklist de buenas practicas (longitud de meta tags, nº de H2, nº
+    de FAQ, palabras) y permite descargar en Markdown o HTML.
 
 Ejecutar:  streamlit run app.py
-Requisitos: streamlit, pandas, numpy, plotly
+Requisitos: streamlit, pandas, numpy, plotly, requests
+Opcionales (mejoran funcionalidad pero la app no rompe sin ellos):
+  - anthropic          -> redaccion 100% IA en el Content Factory
+  - gspread, google-auth -> lectura de Google Sheets PRIVADOS
+Variables/secrets opcionales:
+  - ANTHROPIC_API_KEY (env var o st.secrets) -> activa generate_ai_blog_llm
+  - st.secrets["gcp_service_account"] (dict del JSON de una cuenta de
+    servicio de Google Cloud con Sheets API + Drive API habilitadas) ->
+    activa la lectura de hojas de Google Sheets privadas.
 ============================================================================
 """
 
@@ -32,8 +59,11 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
 import io
+import os
 import re
+import json
 import zipfile
+import requests
 
 # ==========================================
 # 1. CONFIGURACION GLOBAL Y ESTILOS
@@ -52,12 +82,14 @@ st.markdown("""
     .metric-value { font-size:2rem; font-weight:800; color:#202124; margin:6px 0; }
     .blog-container { background:#f8f9fa; padding:24px; border-radius:8px; border-left:4px solid #34a853; margin-top:12px; line-height:1.6; }
     .img-suggestion { background:#e8f0fe; color:#1a73e8; padding:14px; border-radius:6px; font-family:monospace; margin:16px 0; border:1px dashed #1a73e8; font-size:.85rem; }
+    .meta-box { background:#f1f3f4; color:#202124; padding:14px; border-radius:6px; margin:12px 0; border:1px dashed #5f6368; font-size:.85rem; }
     .rec-card { background:#fff; border:1px solid #e0e0e0; border-radius:12px; padding:18px; margin-bottom:14px; }
     .tag { display:inline-block; padding:2px 8px; border-radius:5px; font-size:.72rem; font-weight:600; margin-right:6px; }
     .tag-alta { background:#fce8e6; color:#c5221f; }
     .tag-media { background:#fef7e0; color:#b06000; }
     .tag-info { background:#e8f0fe; color:#1a73e8; }
     .tag-canal { background:#f1f3f4; color:#5f6368; }
+    .tag-cal { background:#f3e8fd; color:#7b1fa2; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -207,8 +239,10 @@ WF_FACTS = {
 
 
 def generate_ai_blog(keyword, title):
-    """Motor IA de redaccion. Se ciñe a los datos REALES de WF_FACTS. Detecta la
-    vertical de la keyword y adapta el enfoque (alquiler vs venta)."""
+    """Motor de plantillas (RESPALDO). Se usa solo si no hay ANTHROPIC_API_KEY
+    configurada -> ver generate_ai_blog_llm() para la redaccion 100% IA real.
+    Se ciñe a los datos REALES de WF_FACTS. Detecta la vertical de la keyword
+    y adapta el enfoque (alquiler vs venta)."""
     vert = clasifica_vertical(keyword) if "clasifica_vertical" in globals() else "ALQUILER"
     if "eurodisney" in keyword.lower():
         return """
@@ -445,6 +479,33 @@ def _parse_fecha_es(s):
         return pd.NaT
 
 
+def _parse_ads_df(df):
+    """Normaliza un DataFrame crudo (ya con cabecera correcta) del 'historial de
+    cambios' de Google Ads -> Fecha, Usuario, Campaña, Grupo, Cambios, Mes.
+    Extraido a parte para poder reutilizarlo tanto con archivos subidos como
+    con datos que llegan de Google Sheets."""
+    if df is None or df.empty:
+        return None
+    cols = {c.lower().strip(): c for c in df.columns}
+    fcol = next((cols[c] for c in cols if "fecha" in c), None)
+    if fcol is None:
+        return None
+    out = pd.DataFrame()
+    out["Fecha"] = df[fcol].apply(_parse_fecha_es)
+    out["Usuario"] = df[cols.get("usuario", fcol)] if "usuario" in cols else ""
+    ccol = next((cols[c] for c in cols if "campa" in c), None)
+    out["Campaña"] = df[ccol] if ccol else ""
+    gcol = next((cols[c] for c in cols if "grupo" in c), None)
+    out["Grupo"] = df[gcol] if gcol else ""
+    chcol = next((cols[c] for c in cols if "cambio" in c), None)
+    out["Cambios"] = df[chcol] if chcol else ""
+    out = out.dropna(subset=["Fecha"])
+    if out.empty:
+        return None
+    out["Mes"] = out["Fecha"].dt.to_period("M").astype(str)
+    return out.sort_values("Fecha").reset_index(drop=True)
+
+
 def parse_ads_change_history(raw_bytes, filename):
     """Lee el 'Informe de historial de cambios' de Google Ads (CSV/XLSX).
     Devuelve DataFrame con Fecha, Usuario, Campaña, Grupo, Cambios | None."""
@@ -473,27 +534,42 @@ def parse_ads_change_history(raw_bytes, filename):
                     break
     except Exception:
         return None
-    if df is None or df.empty:
-        return None
+    return _parse_ads_df(df)
 
-    cols = {c.lower().strip(): c for c in df.columns}
-    fcol = next((cols[c] for c in cols if "fecha" in c), None)
-    if fcol is None:
-        return None
-    out = pd.DataFrame()
-    out["Fecha"] = df[fcol].apply(_parse_fecha_es)
-    out["Usuario"] = df[cols.get("usuario", fcol)] if "usuario" in cols else ""
-    ccol = next((cols[c] for c in cols if "campa" in c), None)
-    out["Campaña"] = df[ccol] if ccol else ""
-    gcol = next((cols[c] for c in cols if "grupo" in c), None)
-    out["Grupo"] = df[gcol] if gcol else ""
-    chcol = next((cols[c] for c in cols if "cambio" in c), None)
-    out["Cambios"] = df[chcol] if chcol else ""
-    out = out.dropna(subset=["Fecha"])
-    if out.empty:
-        return None
-    out["Mes"] = out["Fecha"].dt.to_period("M").astype(str)
-    return out.sort_values("Fecha").reset_index(drop=True)
+
+def _classify_and_normalize_df(df):
+    """Dado un DataFrame crudo (de CSV/XLSX suelto o de Google Sheets), decide
+    si es Consultas, Páginas, Serie temporal o Indexación de GSC, y lo
+    normaliza. Extraido de parse_gsc_upload para poder reutilizarlo con
+    Google Sheets sin tener que pasar por bytes/ficheros."""
+    res = {"queries": None, "pages": None, "index_urls": None, "index_issue": None,
+           "timeseries": None, "msg": ""}
+    if df is None or df.empty:
+        res["msg"] = "No se pudo leer el archivo o está vacío."
+        return res
+    cols_lower = {c.lower().strip(): c for c in df.columns}
+    if any(k in cols_lower for k in ["date range", "fecha", "date", "week", "semana"]) and \
+       _find_col(cols_lower, COLMAP["clicks"]) is not None and \
+       _find_col(cols_lower, COLMAP["query"]) is None and \
+       _find_col(cols_lower, COLMAP["page"]) is None:
+        ts = _normalize_timeseries(df)
+        if ts is not None:
+            res["timeseries"] = ts
+            res["msg"] = f"Serie temporal: {len(ts)} periodos"
+            return res
+    if _find_col(cols_lower, COLMAP["query"]) is not None:
+        res["queries"] = _normalize_perf(df, "query")
+        res["msg"] = f"Consultas: {len(res['queries'])} filas"
+    elif _find_col(cols_lower, COLMAP["page"]) is not None:
+        res["pages"] = _normalize_perf(df, "page")
+        res["msg"] = f"Páginas: {len(res['pages'])} filas"
+    elif any("url" in c.lower() for c in df.columns):
+        url_col = next(c for c in df.columns if "url" in c.lower())
+        res["index_urls"] = df.rename(columns={url_col: "URL"})
+        res["msg"] = f"Indexación: {len(df)} URLs"
+    else:
+        res["msg"] = f"No reconozco las columnas: {list(df.columns)}"
+    return res
 
 
 def parse_gsc_upload(uploaded_file):
@@ -557,34 +633,172 @@ def parse_gsc_upload(uploaded_file):
         res["msg"] = " · ".join(msgs) if msgs else "El ZIP no contenía Queries/Pages/Table reconocibles."
         return res
 
-    # --- CSV o XLSX suelto ---
+    # --- CSV o XLSX suelto (reutiliza el mismo clasificador que Google Sheets) ---
     df = _read_any(raw, name)
-    if df is None or df.empty:
-        res["msg"] = "No se pudo leer el archivo."
-        return res
-    cols_lower = {c.lower().strip(): c for c in df.columns}
-    if any(k in cols_lower for k in ["date range", "fecha", "date", "week", "semana"]) and \
-       _find_col(cols_lower, COLMAP["clicks"]) is not None and \
-       _find_col(cols_lower, COLMAP["query"]) is None and \
-       _find_col(cols_lower, COLMAP["page"]) is None:
-        ts = _normalize_timeseries(df)
-        if ts is not None:
-            res["timeseries"] = ts
-            res["msg"] = f"Serie temporal: {len(ts)} periodos"
-            return res
-    if _find_col(cols_lower, COLMAP["query"]) is not None:
-        res["queries"] = _normalize_perf(df, "query")
-        res["msg"] = f"Consultas: {len(res['queries'])} filas"
-    elif _find_col(cols_lower, COLMAP["page"]) is not None:
-        res["pages"] = _normalize_perf(df, "page")
-        res["msg"] = f"Páginas: {len(res['pages'])} filas"
-    elif any("url" in c.lower() for c in df.columns):
-        url_col = next(c for c in df.columns if "url" in c.lower())
-        res["index_urls"] = df.rename(columns={url_col: "URL"})
-        res["msg"] = f"Indexación: {len(df)} URLs"
+    return _classify_and_normalize_df(df)
+
+
+# ==========================================
+# 2.c LECTOR DE GOOGLE SHEETS
+#     Soporta hojas PUBLICAS (export CSV via gviz, sin credenciales) y, si
+#     hay credenciales de cuenta de servicio en st.secrets, hojas PRIVADAS
+#     via gspread. No requiere API de pago para el caso publico.
+#     Sirve para dos cosas:
+#       (a) datos SEO/SEM en el mismo formato que los ficheros de GSC/Ads
+#           (se clasifican con _classify_and_normalize_df / _parse_ads_df).
+#       (b) un CALENDARIO EDITORIAL que alimenta la Fabrica de Contenidos.
+# ==========================================
+def _extract_sheet_id(url_or_id):
+    """Acepta una URL completa de Google Sheets o un ID pelado."""
+    s = str(url_or_id).strip()
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", s)
+    if m:
+        return m.group(1)
+    m2 = re.search(r"[?&]id=([a-zA-Z0-9-_]+)", s)
+    if m2:
+        return m2.group(1)
+    return s  # asumimos que ya es el ID
+
+
+def _extract_gid(url_or_id):
+    m = re.search(r"[#&?]gid=(\d+)", str(url_or_id))
+    return m.group(1) if m else None
+
+
+def read_google_sheet_public(url_or_id, worksheet_name=None):
+    """Lee una hoja PUBLICA ('Cualquiera con el enlace · Lector') como
+    DataFrame, sin credenciales, via el endpoint gviz de Google (el mismo
+    mecanismo que usa 'Publicar en la web'). Devuelve (df, error_msg)."""
+    sheet_id = _extract_sheet_id(url_or_id)
+    gid = _extract_gid(url_or_id)
+    base = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv"
+    if worksheet_name:
+        from urllib.parse import quote
+        endpoint = f"{base}&sheet={quote(worksheet_name)}"
+    elif gid:
+        endpoint = f"{base}&gid={gid}"
     else:
-        res["msg"] = f"No reconozco las columnas: {list(df.columns)}"
-    return res
+        endpoint = base
+    try:
+        r = requests.get(endpoint, timeout=15)
+        if r.status_code != 200 or r.text.strip().startswith("<"):
+            return None, ("No es una hoja pública o el nombre de la pestaña no existe. "
+                          "Comparte la hoja como 'Cualquiera con el enlace · Lector', o "
+                          "configura una cuenta de servicio para hojas privadas.")
+        df = pd.read_csv(io.StringIO(r.text))
+        if df.empty:
+            return None, "La hoja está vacía."
+        return df, None
+    except Exception as e:
+        return None, f"Error al leer la hoja: {e}"
+
+
+def _gspread_client():
+    """Cliente gspread autenticado con cuenta de servicio, si hay credenciales
+    en st.secrets['gcp_service_account']. Devuelve None si no hay o falla
+    (sin romper la app: gspread/google-auth son dependencias opcionales)."""
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+    except ImportError:
+        return None
+    try:
+        creds_dict = st.secrets.get("gcp_service_account")
+    except Exception:
+        creds_dict = None
+    if not creds_dict:
+        return None
+    try:
+        scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly",
+                  "https://www.googleapis.com/auth/drive.readonly"]
+        creds = Credentials.from_service_account_info(dict(creds_dict), scopes=scopes)
+        return gspread.authorize(creds)
+    except Exception:
+        return None
+
+
+def read_google_sheet_private(url_or_id, worksheet_name=None):
+    """Lee una hoja PRIVADA via gspread + cuenta de servicio (st.secrets).
+    Requiere haber compartido la hoja con el email de la cuenta de servicio
+    (el campo client_email del JSON de credenciales). Devuelve (df, error_msg)."""
+    gc = _gspread_client()
+    if gc is None:
+        return None, ("No hay credenciales de cuenta de servicio configuradas "
+                      "(st.secrets['gcp_service_account']). Añádelas en "
+                      ".streamlit/secrets.toml, o comparte la hoja como pública "
+                      "para leerla sin credenciales.")
+    sheet_id = _extract_sheet_id(url_or_id)
+    try:
+        sh = gc.open_by_key(sheet_id)
+        ws = sh.worksheet(worksheet_name) if worksheet_name else sh.sheet1
+        records = ws.get_all_records()
+        if not records:
+            return None, "La pestaña está vacía."
+        return pd.DataFrame(records), None
+    except Exception as e:
+        return None, (f"No se pudo abrir con la cuenta de servicio: {e}. Comparte la "
+                      "hoja con el email de la cuenta de servicio (client_email).")
+
+
+def fetch_google_sheet(url_or_id, worksheet_name=None):
+    """Punto de entrada unico: intenta lectura pública (rápida, sin
+    credenciales) y si falla, intenta con cuenta de servicio (hoja privada).
+    Devuelve (df, mensaje, metodo) donde metodo es 'publica' | 'privada' | None."""
+    df, err = read_google_sheet_public(url_or_id, worksheet_name)
+    if df is not None:
+        return df, f"Leída como hoja pública ({len(df)} filas)", "publica"
+    df2, err2 = read_google_sheet_private(url_or_id, worksheet_name)
+    if df2 is not None:
+        return df2, f"Leída con cuenta de servicio ({len(df2)} filas)", "privada"
+    return None, f"{err}\n{err2 if err2 else ''}".strip(), None
+
+
+# --- Calendario editorial (Google Sheets) -> cola de la Fabrica de Contenidos ---
+CAL_COLMAP = {
+    "titulo": ["titulo", "título", "title", "titulo propuesto", "título propuesto"],
+    "keyword": ["keyword", "palabra clave", "kw", "keyword objetivo"],
+    "vertical": ["vertical", "categoria", "categoría"],
+    "estado": ["estado", "status"],
+    "prioridad": ["prioridad", "priority"],
+    "fecha": ["fecha", "fecha publicacion", "fecha publicación", "date"],
+    "notas": ["notas", "notes", "comentarios", "estrategia"],
+}
+
+
+def normalize_content_calendar(df):
+    """Normaliza un DataFrame de calendario editorial (Google Sheets) a
+    columnas estandar: Título, Keyword, Vertical, Estado, Prioridad, Fecha,
+    Notas. Solo requiere Título o Keyword; el resto se infiere/rellena.
+    Devuelve None si no encuentra ninguna de las dos columnas clave."""
+    cols_lower = {c.lower().strip(): c for c in df.columns}
+
+    def col(key):
+        return _find_col(cols_lower, CAL_COLMAP[key])
+
+    tcol, kcol = col("titulo"), col("keyword")
+    if tcol is None and kcol is None:
+        return None
+    out = pd.DataFrame()
+    out["Título"] = df[tcol] if tcol else df[kcol]
+    out["Keyword"] = df[kcol] if kcol else df[tcol]
+    vcol = col("vertical")
+    if vcol:
+        out["Vertical"] = df[vcol].apply(
+            lambda v: str(v).upper() if str(v).upper() in VERT_COLORS else clasifica_vertical(v))
+    else:
+        out["Vertical"] = out["Keyword"].apply(clasifica_vertical)
+    ecol = col("estado")
+    out["Estado"] = df[ecol].astype(str).str.strip() if ecol else "Pendiente"
+    out["Estado"] = out["Estado"].replace({"nan": "Pendiente", "": "Pendiente", "None": "Pendiente"})
+    pcol = col("prioridad")
+    out["Prioridad"] = df[pcol].astype(str) if pcol else ""
+    fcol = col("fecha")
+    out["Fecha"] = df[fcol].astype(str) if fcol else ""
+    ncol = col("notas")
+    out["Notas"] = df[ncol].astype(str) if ncol else ""
+    out = out.dropna(subset=["Título"])
+    out = out[out["Título"].astype(str).str.strip() != ""]
+    return out.reset_index(drop=True)
 
 
 # --- Clasificador de VERTICALES de negocio (ALQUILER/VENTA/CAMPERIZACION/MARCA) ---
@@ -987,6 +1201,7 @@ def content_strategy_desde_datos(df_q, top_n=6):
                 "porque": (f"Ya apareces {int(r['Impresiones']):,} veces por esta búsqueda pero en posición "
                            f"{r['Posicion']:.0f}: hay demanda comprobada que no capturas. Un artículo enfocado "
                            "aquí ataca tráfico que Google ya te asocia. Máxima prioridad por dato real."),
+                "cal_index": None,
             })
     # Completar con temas de sector probados si faltan propuestas
     for tema, titulo, porque in TEMAS_SECTOR_CAMPER:
@@ -998,8 +1213,32 @@ def content_strategy_desde_datos(df_q, top_n=6):
             "origen": "PATRÓN DE SECTOR",
             "metrica": "Tema con demanda probada en el nicho camper",
             "porque": porque,
+            "cal_index": None,
         })
     return props
+
+
+def build_content_queue(df_q, calendar_df, top_n=6):
+    """Cola unificada de la Fabrica de Contenidos. Orden de prioridad:
+    1) Pendientes del calendario editorial (Google Sheets) — decisión humana.
+    2) Oportunidades REALES de Search Console.
+    3) Patrones de sector con demanda probada.
+    Cada item lleva 'cal_index' (índice en el calendario) para poder marcarlo
+    como Generado tras crear el artículo, o None si no viene del calendario."""
+    queue = []
+    if calendar_df is not None and not calendar_df.empty:
+        pendientes = calendar_df[calendar_df["Estado"].str.lower().isin(
+            ["pendiente", "to do", "todo", "pending", ""])]
+        for idx, r in pendientes.iterrows():
+            queue.append({
+                "titulo": r["Título"], "keyword": r["Keyword"], "vertical": r["Vertical"],
+                "origen": "CALENDARIO EDITORIAL",
+                "metrica": f"Prioridad: {r['Prioridad'] or 'normal'}" + (f" · Fecha objetivo: {r['Fecha']}" if r["Fecha"] else ""),
+                "porque": r["Notas"] or "Definido manualmente en el calendario editorial (Google Sheets).",
+                "cal_index": idx,
+            })
+    queue += content_strategy_desde_datos(df_q, top_n=top_n)
+    return queue
 
 
 def sugerencia_foto(keyword, vertical):
@@ -1021,8 +1260,181 @@ def sugerencia_foto(keyword, vertical):
                 "al vehículo. Aspecto premium y real, no de catálogo.")
         alt = f"Alquiler de camper en Valencia — {keyword}"
     return desc, alt
-#    un LLM (Claude tool-use) que razona sobre datos reales.
+
+
 # ==========================================
+# 2.e MOTOR DE REDACCION SEO CON IA REAL (Anthropic / Claude)
+#     La version anterior de "generate_ai_blog" se llamaba a si misma "motor
+#     IA" pero era una plantilla fija con 3 ramas hardcodeadas. Esta version
+#     llama de verdad a la API de Anthropic, con un system prompt que se ciñe
+#     estrictamente a WF_FACTS (para no alucinar precios/servicios) y devuelve
+#     un articulo estructurado (meta tags, H2s, FAQ, CTA, enlaces internos,
+#     prompt de imagen) en JSON. Si no hay ANTHROPIC_API_KEY configurada, el
+#     Content Factory cae automaticamente a generate_ai_blog() (plantilla).
+# ==========================================
+def _get_anthropic_client():
+    """Devuelve un cliente de Anthropic si hay API key configurada (env var o
+    st.secrets), si no None. anthropic es una dependencia OPCIONAL: si no
+    está instalada, esto no rompe el resto de la app."""
+    api_key = None
+    try:
+        api_key = st.secrets.get("ANTHROPIC_API_KEY")
+    except Exception:
+        api_key = None
+    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+    try:
+        import anthropic
+        return anthropic.Anthropic(api_key=api_key)
+    except Exception:
+        return None
+
+
+SYSTEM_PROMPT_REDACTOR = (
+    "Eres el redactor SEO senior de Wheely Fog, una empresa de alquiler y venta de "
+    "furgonetas camper premium en Rafelbunyol (Valencia). Escribes en español de España, "
+    "con un tono editorial y cercano a la vez: piensa en el registro de marcas premium "
+    "tipo Aesop o Glossier trasladado a viajes -- frases cortas, vocabulario sensorial "
+    "pero preciso, cero relleno corporativo, cero superlativos vacíos ('el mejor', "
+    "'increíble', 'no te lo puedes perder'). Nunca inventas datos: SOLO puedes usar los "
+    "hechos reales de Wheely Fog que se te dan a continuación. Si necesitas un dato que no "
+    "tienes (precio exacto de un modelo concreto, disponibilidad puntual), indícalo como "
+    "[dato pendiente] en vez de inventarlo.\n\n"
+    "HECHOS REALES DE WHEELY FOG (no salgas de aquí):\n"
+    + "\n".join(f"- {k}: {v}" for k, v in WF_FACTS.items())
+    + "\n\nDebes devolver EXCLUSIVAMENTE un JSON válido (sin ```json ni texto alrededor, "
+    "sin comentarios) con esta forma exacta:\n"
+    '{\n'
+    '  "meta_title": "...",           // 50-60 caracteres, con la keyword principal\n'
+    '  "meta_description": "...",     // 140-160 caracteres, con CTA suave\n'
+    '  "h1": "...",\n'
+    '  "intro": "...",                // 2-3 frases, engancha y sitúa el tema\n'
+    '  "secciones": [{"h2": "...", "parrafo": "..."}],  // 3 a 5 secciones, 60-110 palabras c/u\n'
+    '  "faq": [{"pregunta": "...", "respuesta": "..."}], // 3 preguntas reales, respuestas breves\n'
+    '  "cta_final": "...",            // 1-2 frases, invita a reservar/consultar\n'
+    '  "internal_links_sugeridos": ["...", "..."],  // 2-4 anclas a otras páginas de Wheely Fog\n'
+    '  "image_prompt": "...",         // 1 prompt fotográfico realista (banco libre o IA)\n'
+    '  "image_alt": "..."             // alt text SEO con la keyword\n'
+    '}'
+)
+
+
+def generate_ai_blog_llm(keyword, title, vertical="ALQUILER"):
+    """Genera un articulo REAL con Claude (API de Anthropic), grounded en
+    WF_FACTS. Devuelve un dict estructurado, o None si no hay API key o falla
+    la llamada (en cuyo caso el caller debe usar generate_ai_blog() como
+    respaldo)."""
+    client = _get_anthropic_client()
+    if client is None:
+        return None
+    user_prompt = (
+        f'Escribe el artículo para: "{title}"\n'
+        f'Keyword objetivo: "{keyword}"\n'
+        f'Vertical de negocio: {vertical} (ALQUILER = alquiler de campers; '
+        f'VENTA = venta de campers ex-flota con historial; CAMPERIZACION = servicio '
+        f'próximamente, solo lista de espera; MARCA = contenido de marca/flota).\n'
+        f'Devuelve solo el JSON pedido, nada más.'
+    )
+    try:
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2200,
+            system=SYSTEM_PROMPT_REDACTOR,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        raw = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(json)?\s*|```\s*$", "", raw, flags=re.MULTILINE).strip()
+        data = json.loads(raw)
+        return data
+    except Exception as e:
+        st.session_state["_last_ai_error"] = str(e)
+        return None
+
+
+def render_articulo_html(data, keyword, vertical):
+    """Renderiza el JSON estructurado del redactor IA como HTML para mostrar
+    en el blog-container, igual que hacía la plantilla original."""
+    desc, alt = sugerencia_foto(keyword, vertical)
+    secciones_html = "".join(
+        f"<h4>{s.get('h2','')}</h4><p>{s.get('parrafo','')}</p>" for s in data.get("secciones", []))
+    faq_html = "".join(
+        f"<p><strong>{f.get('pregunta','')}</strong><br>{f.get('respuesta','')}</p>" for f in data.get("faq", []))
+    links = data.get("internal_links_sugeridos", [])
+    links_html = ("<p style='color:#5f6368;font-size:.85rem;'><b>Enlaces internos sugeridos:</b> "
+                  + " · ".join(links) + "</p>") if links else ""
+    return f"""
+    <h3>{data.get('h1', title_fallback(keyword))}</h3>
+    <p>{data.get('intro', '')}</p>
+    {secciones_html}
+    <h4>Preguntas frecuentes</h4>
+    {faq_html}
+    <p>{data.get('cta_final', '')}</p>
+    {links_html}
+    <div class="img-suggestion">📸 <b>Prompt de imagen sugerido:</b><br>{data.get('image_prompt', desc)}
+    <br><i>Alt text SEO: {data.get('image_alt', alt)}</i></div>
+    """
+
+
+def title_fallback(keyword):
+    return str(keyword).capitalize()
+
+
+def articulo_to_markdown(data, keyword):
+    """Exporta el articulo estructurado a Markdown, listo para pegar en un CMS."""
+    md = [f"# {data.get('h1', title_fallback(keyword))}", "", data.get("intro", ""), ""]
+    for s in data.get("secciones", []):
+        md += [f"## {s.get('h2','')}", s.get('parrafo', ''), ""]
+    if data.get("faq"):
+        md += ["## Preguntas frecuentes", ""]
+        for f in data["faq"]:
+            md += [f"**{f.get('pregunta','')}**", f.get('respuesta', ''), ""]
+    if data.get("cta_final"):
+        md += [data["cta_final"], ""]
+    md += [f"*Meta title:* {data.get('meta_title','')}",
+           f"*Meta description:* {data.get('meta_description','')}"]
+    return "\n".join(md)
+
+
+def seo_checklist(data, keyword):
+    """Chequeo rapido de buenas practicas SEO sobre el articulo generado.
+    Devuelve lista de (etiqueta, ok:bool, nota)."""
+    checks = []
+    mt = data.get("meta_title", "") or ""
+    md_ = data.get("meta_description", "") or ""
+    checks.append(("Meta title 50-60 caracteres", 50 <= len(mt) <= 60, f"{len(mt)} car."))
+    checks.append(("Meta description 140-160 caracteres", 140 <= len(md_) <= 160, f"{len(md_)} car."))
+    primera_palabra = str(keyword).lower().split()[0] if str(keyword).strip() else ""
+    checks.append(("Keyword en el H1", primera_palabra in data.get("h1", "").lower(), ""))
+    n_sec = len(data.get("secciones", []))
+    checks.append(("Entre 3 y 5 secciones H2", 3 <= n_sec <= 5, f"{n_sec} secciones"))
+    n_faq = len(data.get("faq", []))
+    checks.append(("Al menos 2 preguntas FAQ", n_faq >= 2, f"{n_faq} preguntas"))
+    total_words = len(str(data.get("intro", "")).split()) + sum(
+        len(str(s.get("parrafo", "")).split()) for s in data.get("secciones", []))
+    checks.append(("Cuerpo con 300+ palabras", total_words >= 300, f"~{total_words} palabras"))
+    return checks
+
+
+def render_seo_checklist(data, keyword):
+    checks = seo_checklist(data, keyword)
+    st.markdown("**✅ Checklist SEO del artículo**")
+    cols = st.columns(2)
+    for i, (label, ok, note) in enumerate(checks):
+        icon = "✅" if ok else "⚠️"
+        cols[i % 2].caption(f"{icon} {label} {f'({note})' if note else ''}")
+
+
+def render_meta_box(data):
+    mt, md_ = data.get('meta_title', ''), data.get('meta_description', '')
+    st.markdown(f"""<div class="meta-box">
+    🏷️ <b>Meta title</b> ({len(mt)} car.): {mt}<br>
+    📝 <b>Meta description</b> ({len(md_)} car.): {md_}
+    </div>""", unsafe_allow_html=True)
+
+
+# --- Motor heurístico de recomendaciones SEM/SEO (cruce SEO x SEM sintético) ---
 INTENT_COMPRA = ["comprar", "compra", "segunda mano", "venta", "vender", "ocasion", "km0", "km 0"]
 INTENT_ALQUILER = ["alquiler", "alquilar", "rent", "fin de semana", "ruta", "escapada"]
 
@@ -1153,6 +1565,10 @@ if "file_registry" not in st.session_state:
     st.session_state.file_registry = []  # [(nombre, seccion, detalle, ts)]
 if "articulos_log" not in st.session_state:
     st.session_state.articulos_log = []  # cronología de artículos generados
+if "content_calendar" not in st.session_state:
+    st.session_state.content_calendar = None  # calendario editorial (Google Sheets)
+if "content_calendar_url" not in st.session_state:
+    st.session_state.content_calendar_url = None
 
 # ==========================================
 # 4. BARRA LATERAL Y FILTROS GLOBALES
@@ -1221,12 +1637,88 @@ with st.sidebar:
                 st.session_state.file_registry.append(
                     (uf.name, seccion, detalle, datetime.today().strftime("%Y-%m-%d %H:%M")))
 
+    st.divider()
+    st.markdown("### 🔗 O conecta Google Sheets")
+    st.caption("Hojas **públicas** ('Cualquiera con el enlace · Lector') se leen sin credenciales. "
+               "Para hojas **privadas**, configura una cuenta de servicio en `st.secrets`.")
+    with st.expander("Conectar una hoja", expanded=False):
+        gs_url = st.text_input("URL o ID de Google Sheets:", key="gs_url_input",
+                               placeholder="https://docs.google.com/spreadsheets/d/...")
+        gs_tab = st.text_input("Nombre de la pestaña (opcional):", key="gs_tab_input")
+        gs_tipo = st.radio(
+            "¿Qué contiene esta hoja?",
+            ["Auto-detectar (Consultas / Páginas / Cambios de Ads)",
+             "Calendario editorial (Content Factory)"],
+            key="gs_tipo",
+        )
+        if st.button("📥 Cargar hoja", key="gs_load_btn", use_container_width=True) and gs_url:
+            with st.spinner("Leyendo Google Sheets..."):
+                df_gs, msg_gs, metodo = fetch_google_sheet(gs_url, gs_tab or None)
+            if df_gs is None:
+                st.error(f"❌ {msg_gs}")
+            else:
+                icono_metodo = "🌐" if metodo == "publica" else "🔐"
+                if gs_tipo.startswith("Calendario"):
+                    cal = normalize_content_calendar(df_gs)
+                    if cal is None:
+                        st.error("No encuentro columna de Título ni Keyword. Revisa las cabeceras de la hoja "
+                                 "(admite variantes: 'Título', 'Keyword', 'Palabra clave', 'Estado'...).")
+                    else:
+                        st.session_state.content_calendar = cal
+                        st.session_state.content_calendar_url = gs_url
+                        st.success(f"{icono_metodo} Calendario cargado: {len(cal)} artículos ({msg_gs}).")
+                        st.session_state.file_registry = [
+                            x for x in st.session_state.file_registry if x[0] != "Google Sheets · Calendario"]
+                        st.session_state.file_registry.append(
+                            ("Google Sheets · Calendario", "SEO", f"{len(cal)} filas",
+                             datetime.today().strftime("%Y-%m-%d %H:%M")))
+                        st.rerun()
+                else:
+                    ads_df = _parse_ads_df(df_gs)
+                    if ads_df is not None and len(ads_df) > 0:
+                        st.session_state.ads_changes = ads_df
+                        st.success(f"{icono_metodo} 🛰️ SEM · {len(ads_df)} cambios de Ads ({msg_gs}).")
+                        st.session_state.file_registry = [
+                            x for x in st.session_state.file_registry if x[0] != "Google Sheets · Ads"]
+                        st.session_state.file_registry.append(
+                            ("Google Sheets · Ads", "SEM", f"{len(ads_df)} cambios",
+                             datetime.today().strftime("%Y-%m-%d %H:%M")))
+                        st.rerun()
+                    else:
+                        r = _classify_and_normalize_df(df_gs)
+                        got = False
+                        if r["queries"] is not None:
+                            st.session_state.gsc_queries = r["queries"]; got = True
+                        if r["pages"] is not None:
+                            st.session_state.gsc_pages = r["pages"]; got = True
+                        if r["index_urls"] is not None:
+                            issue = r["index_issue"] or "Google Sheets"
+                            st.session_state.gsc_index = [x for x in st.session_state.gsc_index if x[0] != issue]
+                            st.session_state.gsc_index.append((issue, r["index_urls"])); got = True
+                        if r.get("timeseries") is not None:
+                            st.session_state.gsc_ts = r["timeseries"]; got = True
+                        if got:
+                            st.success(f"{icono_metodo} 📡 SEO · {r['msg']} ({msg_gs}).")
+                            st.session_state.file_registry = [
+                                x for x in st.session_state.file_registry if x[0] != "Google Sheets · SEO"]
+                            st.session_state.file_registry.append(
+                                ("Google Sheets · SEO", "SEO", r["msg"],
+                                 datetime.today().strftime("%Y-%m-%d %H:%M")))
+                            st.rerun()
+                        else:
+                            st.warning(f"❓ {r['msg']}")
+
+        if st.session_state.content_calendar is not None:
+            n_pend = int((st.session_state.content_calendar["Estado"].str.lower() == "pendiente").sum())
+            st.caption(f"🗓️ Calendario activo: {len(st.session_state.content_calendar)} artículos "
+                      f"· {n_pend} pendientes")
+
     # Registro de archivos en memoria (para no perder de vista qué hay cargado)
     if st.session_state.file_registry:
         st.markdown("##### 🗂️ Archivos en memoria")
         for nombre, seccion, detalle, ts in st.session_state.file_registry:
             icono = "🛰️" if seccion == "SEM" else "📡"
-            st.caption(f"{icono} **{seccion}** · {nombre[:28]} · {detalle}")
+            st.caption(f"{icono} **{seccion}** · {nombre[:32]} · {detalle}")
 
     st.divider()
     st.markdown("### 📅 Filtro Temporal (SEM demo)")
@@ -1238,12 +1730,17 @@ with st.sidebar:
     if st.session_state.ads_changes is not None:
         st.success(f"🟢 Google Ads (historial): {len(st.session_state.ads_changes)} cambios")
     else:
-        st.warning("🟡 Google Ads: sube el historial de cambios")
+        st.warning("🟡 Google Ads: sube el historial de cambios o conéctalo por Sheets")
     if st.session_state.gsc_queries is not None or st.session_state.gsc_pages is not None:
         st.success("🟢 Search Console: datos cargados")
     else:
-        st.warning("🟡 Search Console: sin datos (sube el ZIP)")
+        st.warning("🟡 Search Console: sin datos (sube el ZIP o conéctalo por Sheets)")
     st.warning("🟡 GA4: sin conectar")
+    if _get_anthropic_client() is not None:
+        st.success("🟢 Redacción IA (Anthropic): activa")
+    else:
+        st.info("🔵 Redacción IA: configura ANTHROPIC_API_KEY para artículos 100% IA "
+                "(si no, se usa la plantilla de respaldo)")
 
 
 # ==========================================
@@ -1256,7 +1753,8 @@ if hemisferio == "🤖 Recomendaciones del Agente":
     # Si hay datos REALES de GSC cargados, esas recomendaciones van primero
     recomendaciones = build_gsc_recommendations(st.session_state.gsc_queries)
     if st.session_state.gsc_queries is None:
-        st.info("💡 Sube el ZIP de Search Console en la barra lateral para obtener recomendaciones sobre datos REALES. Mientras tanto, se muestran las de demostración.")
+        st.info("💡 Sube el ZIP de Search Console (o conéctalo por Google Sheets) en la barra lateral "
+                "para obtener recomendaciones sobre datos REALES. Mientras tanto, se muestran las de demostración.")
     recomendaciones += build_recommendations(df_cross, df_seo)
     activas = [r for r in recomendaciones if r["id"] not in st.session_state.rec_estado]
 
@@ -1311,15 +1809,15 @@ if hemisferio == "🤖 Recomendaciones del Agente":
 # ==========================================
 elif hemisferio == "📡 SEO Real (Search Console)":
     st.title("📡 SEO Real (Search Console)")
-    st.markdown("Datos **reales** de tu web leídos de los archivos de Google Search Console. Gratis, sin API.")
+    st.markdown("Datos **reales** de tu web leídos de Google Search Console (archivo o Google Sheets). Gratis, sin API de pago.")
 
     dfq = st.session_state.gsc_queries
     dfp = st.session_state.gsc_pages
     idx = st.session_state.gsc_index
 
     if dfq is None and dfp is None and not idx:
-        st.info("⬅️ Sube en la barra lateral el **ZIP** que exportas de GSC "
-                "(Rendimiento → Exportar, o Indexación → un motivo → Exportar). "
+        st.info("⬅️ En la barra lateral, sube el **ZIP** que exportas de GSC (Rendimiento → Exportar, o "
+                "Indexación → un motivo → Exportar) o conecta una **Google Sheet** con esos mismos datos. "
                 "También valen CSV o XLSX sueltos.")
     else:
         tab_perf, tab_evo, tab_kw, tab_pag, tab_idx = st.tabs(
@@ -1495,8 +1993,9 @@ elif hemisferio == "🛰️ SEM (Performance & Subastas)":
     st.subheader("🔍 Términos con buen rendimiento (datos REALES de Search Console)")
     dfq_sem = st.session_state.gsc_queries
     if dfq_sem is None:
-        st.info("Sube el ZIP de Search Console (barra lateral) para ver aquí tus términos reales, "
-                "identificar los que mejor convierten en orgánico y decidir cuáles reforzar con SEM cuando lo conectes.")
+        st.info("Sube el ZIP de Search Console (o conéctalo por Google Sheets) en la barra lateral para "
+                "ver aquí tus términos reales, identificar los que mejor convierten en orgánico y decidir "
+                "cuáles reforzar con SEM cuando lo conectes.")
     else:
         tabla = tabla_rendimiento(dfq_sem, top=200)
         f1, f2 = st.columns([2, 1])
@@ -1515,9 +2014,9 @@ elif hemisferio == "🛰️ SEM (Performance & Subastas)":
     st.subheader("🗓️ Frecuencia de trabajo en la cuenta (historial de cambios)")
     ch = st.session_state.ads_changes
     if ch is None:
-        st.info("Sube el **'Informe de historial de cambios'** de Google Ads (barra lateral) para "
-                "medir con qué frecuencia se ha trabajado la cuenta: cuántos cambios, quién los hizo y cuándo. "
-                "Ideal para auditar la actividad de la agencia.")
+        st.info("Sube el **'Informe de historial de cambios'** de Google Ads (barra lateral, archivo o "
+                "Google Sheets) para medir con qué frecuencia se ha trabajado la cuenta: cuántos cambios, "
+                "quién los hizo y cuándo. Ideal para auditar la actividad de la agencia.")
     else:
         fmin, fmax = ch["Fecha"].min().date(), ch["Fecha"].max().date()
         st.caption(f"Historial disponible: {fmin} → {fmax} · {len(ch)} cambios totales.")
@@ -1609,10 +2108,12 @@ elif hemisferio == "🛰️ SEM (Performance & Subastas)":
 
 # ==========================================
 # 7. MODULO SEO: CONTENT FACTORY
+#    Reescrito: cola priorizada (Calendario > GSC real > Sector), redaccion
+#    con IA real (Anthropic) grounded en WF_FACTS, checklist SEO, descargas.
 # ==========================================
 elif hemisferio == "📝 SEO (Content Factory Orgánico)":
     st.title("📝 Director de Contenidos Autónomo (SEO)")
-    st.markdown("Análisis SERP, volumen y fábrica de contenidos automatizada.")
+    st.markdown("Análisis SERP, volumen y fábrica de contenidos con redacción IA real, grounded en tus datos.")
 
     trafico_total = df_seo["Tráfico Mensual"].sum()
     # FIX: posicion media PONDERADA por trafico (no media aritmetica)
@@ -1636,22 +2137,44 @@ elif hemisferio == "📝 SEO (Content Factory Orgánico)":
             st.warning("Sin coincidencias. ¡Oportunidad para crear contenido nuevo!")
 
     st.divider()
-    st.subheader("🏭 Fábrica de Contenidos (estrategia sobre datos reales)")
-    dfq_cf = st.session_state.gsc_queries
-    if dfq_cf is not None:
-        st.success("✅ Usando tus datos reales de Search Console para priorizar por demanda comprobada.")
-    else:
-        st.info("💡 Sube el ZIP de GSC para que las propuestas se basen en tus impresiones/posiciones reales. "
-                "Mientras, se muestran temas con demanda probada en el sector camper.")
+    st.subheader("🏭 Fábrica de Contenidos (calendario + datos reales + IA)")
 
-    propuestas = content_strategy_desde_datos(dfq_cf, top_n=6)
+    dfq_cf = st.session_state.gsc_queries
+    cal_cf = st.session_state.content_calendar
+    ai_activa = _get_anthropic_client() is not None
+
+    fc1, fc2, fc3 = st.columns(3)
+    with fc1:
+        n_cal = int((cal_cf["Estado"].str.lower() == "pendiente").sum()) if cal_cf is not None else 0
+        render_metric("Pendientes en calendario", str(n_cal), "cross")
+    with fc2:
+        render_metric("Fuente de datos SEO", "Real (GSC)" if dfq_cf is not None else "Sector (demo)", "seo")
+    with fc3:
+        render_metric("Redacción IA", "Activa" if ai_activa else "Plantilla de respaldo",
+                      "seo" if ai_activa else "sem")
+
+    if not ai_activa:
+        st.warning("🔑 No hay `ANTHROPIC_API_KEY` configurada (variable de entorno o `st.secrets`). "
+                   "Los artículos se generarán con la plantilla de respaldo, no con redacción 100% IA. "
+                   "Añade la clave para desbloquear artículos únicos por cada keyword, con FAQ, meta tags "
+                   "y checklist SEO automáticos.")
+    if cal_cf is None:
+        st.info("💡 Conecta un **calendario editorial** por Google Sheets (barra lateral) con columnas "
+                "'Título', 'Keyword', 'Vertical' (opcional) y 'Estado', para que la Fábrica priorice esos "
+                "artículos sobre las oportunidades de Search Console y los patrones de sector.")
+
+    propuestas = build_content_queue(dfq_cf, cal_cf, top_n=6)
+
     for i, prop in enumerate(propuestas):
         with st.container(border=True):
-            badge = "🟢 DATO REAL" if prop["origen"] == "DATO REAL (GSC)" else "🔵 PATRÓN SECTOR"
+            badge_map = {"CALENDARIO EDITORIAL": ("🗓️ CALENDARIO", "tag-cal"),
+                        "DATO REAL (GSC)": ("🟢 DATO REAL", "tag-info"),
+                        "PATRÓN DE SECTOR": ("🔵 PATRÓN SECTOR", "tag-info")}
+            badge_txt, badge_cls = badge_map.get(prop["origen"], ("🔵 PATRÓN SECTOR", "tag-info"))
             vcolor = VERT_COLORS.get(prop["vertical"], "#5f6368")
             st.markdown(f"#### 📌 {prop['titulo']}")
             st.markdown(f"<span class='tag' style='background:{vcolor};color:#fff;'>{prop['vertical']}</span> "
-                        f"<span class='tag tag-info'>{badge}</span> "
+                        f"<span class='tag {badge_cls}'>{badge_txt}</span> "
                         f"<code style='font-size:.78rem'>{prop['keyword']}</code>", unsafe_allow_html=True)
             st.caption(f"📊 {prop['metrica']}")
             st.info(f"🧠 **Por qué este contenido:** {prop['porque']}")
@@ -1660,8 +2183,15 @@ elif hemisferio == "📝 SEO (Content Factory Orgánico)":
             if not st.session_state.get(akey):
                 if st.button("🧠 Generar artículo", key=f"gen_{i}"):
                     with st.spinner("Redactando con los datos reales de Wheely Fog..."):
-                        html = generate_ai_blog(prop["keyword"], prop["titulo"])
-                        st.session_state[akey] = html
+                        data = generate_ai_blog_llm(prop["keyword"], prop["titulo"], prop["vertical"]) if ai_activa else None
+                        if data is not None:
+                            html = render_articulo_html(data, prop["keyword"], prop["vertical"])
+                        else:
+                            html = generate_ai_blog(prop["keyword"], prop["titulo"])  # respaldo
+                        st.session_state[akey] = {"html": html, "data": data}
+                        # Si viene del calendario, marcar como Generado
+                        if prop.get("cal_index") is not None and st.session_state.content_calendar is not None:
+                            st.session_state.content_calendar.loc[prop["cal_index"], "Estado"] = "Generado"
                         # Cronología de artículos
                         st.session_state.articulos_log = [
                             x for x in st.session_state.articulos_log if x["titulo"] != prop["titulo"]]
@@ -1669,18 +2199,47 @@ elif hemisferio == "📝 SEO (Content Factory Orgánico)":
                             "titulo": prop["titulo"], "keyword": prop["keyword"],
                             "vertical": prop["vertical"], "origen": prop["origen"],
                             "fecha": datetime.today().strftime("%Y-%m-%d %H:%M"),
-                            "html": html})
+                            "html": html, "data": data})
                     st.rerun()
             else:
-                st.markdown(f'<div class="blog-container">{st.session_state[akey]}</div>',
-                            unsafe_allow_html=True)
-                # Sugerencia de FOTO a buscar manualmente
-                desc, alt = sugerencia_foto(prop["keyword"], prop["vertical"])
-                st.markdown(f"""<div class="img-suggestion">📸 <b>Qué foto buscar (banco libre, sin copyright):</b><br>
-                {desc}<br><i>Alt text SEO sugerido: {alt}</i></div>""", unsafe_allow_html=True)
-                if st.button("Descartar", key=f"disc_{i}"):
-                    st.session_state[akey] = None
-                    st.rerun()
+                art = st.session_state[akey]
+                st.markdown(f'<div class="blog-container">{art["html"]}</div>', unsafe_allow_html=True)
+                if art["data"] is not None:
+                    render_meta_box(art["data"])
+                    render_seo_checklist(art["data"], prop["keyword"])
+                    dl1, dl2, dl3 = st.columns(3)
+                    dl1.download_button(
+                        "💾 Descargar Markdown", articulo_to_markdown(art["data"], prop["keyword"]),
+                        file_name=f"{re.sub(r'[^a-z0-9]+', '-', prop['keyword'].lower()).strip('-')}.md",
+                        key=f"dlmd_{i}")
+                    dl2.download_button(
+                        "💾 Descargar HTML", art["html"],
+                        file_name=f"{re.sub(r'[^a-z0-9]+', '-', prop['keyword'].lower()).strip('-')}.html",
+                        key=f"dlhtml_{i}")
+                    if dl3.button("Descartar", key=f"disc_{i}"):
+                        st.session_state[akey] = None
+                        st.rerun()
+                else:
+                    desc, alt = sugerencia_foto(prop["keyword"], prop["vertical"])
+                    st.markdown(f"""<div class="img-suggestion">📸 <b>Qué foto buscar (banco libre, sin copyright):</b><br>
+                    {desc}<br><i>Alt text SEO sugerido: {alt}</i></div>""", unsafe_allow_html=True)
+                    st.caption("ℹ️ Generado con la plantilla de respaldo (sin ANTHROPIC_API_KEY o falló la "
+                              "llamada a la API). No hay checklist SEO ni meta tags automáticos en este modo.")
+                    if st.button("Descartar", key=f"disc_{i}"):
+                        st.session_state[akey] = None
+                        st.rerun()
+
+    # --- Descargar calendario actualizado (tras marcar artículos como Generado) ---
+    if st.session_state.content_calendar is not None:
+        st.divider()
+        st.subheader("🗓️ Calendario editorial")
+        st.caption("Los artículos generados desde el calendario se marcan aquí como 'Generado'. "
+                  "Descarga el CSV y pégalo de vuelta en tu Google Sheet para mantenerlo sincronizado.")
+        st.dataframe(st.session_state.content_calendar, use_container_width=True, hide_index=True)
+        st.download_button(
+            "📥 Descargar calendario actualizado (CSV)",
+            st.session_state.content_calendar.to_csv(index=False).encode("utf-8-sig"),
+            file_name="calendario_editorial_actualizado.csv", key="dl_calendar")
 
     # --- CRONOLOGÍA de artículos generados ---
     st.divider()
@@ -1693,10 +2252,13 @@ elif hemisferio == "📝 SEO (Content Factory Orgánico)":
         st.caption(f"{len(log)} artículos generados en esta sesión (más reciente arriba).")
         for a in log:
             vcolor = VERT_COLORS.get(a["vertical"], "#5f6368")
-            with st.expander(f"📄 {a['fecha']} · {a['titulo']} [{a['vertical']}]"):
+            modo = "🧠 IA real" if a.get("data") else "📄 Plantilla"
+            with st.expander(f"📄 {a['fecha']} · {a['titulo']} [{a['vertical']}] · {modo}"):
                 st.markdown(f"<span class='tag' style='background:{vcolor};color:#fff;'>{a['vertical']}</span> "
                             f"<code>{a['keyword']}</code> · origen: {a['origen']}", unsafe_allow_html=True)
                 st.markdown(f'<div class="blog-container">{a["html"]}</div>', unsafe_allow_html=True)
+                if a.get("data"):
+                    render_meta_box(a["data"])
 
     st.divider()
     st.subheader("📈 Mapa de Competitividad SEO (demo)")
