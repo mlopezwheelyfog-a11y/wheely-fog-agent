@@ -2456,13 +2456,35 @@ elif hemisferio == "🛰️ SEM (Performance & Subastas)":
             fig.update_layout(barmode="group", hovermode="x unified", title="Evolución (demo, no real)")
             st.plotly_chart(fig, use_container_width=True)
     else:
-        total_gasto = df_campañas_real["Coste"].sum()
-        total_retorno = df_campañas_real["Valor Conversión"].sum()
-        total_conv = df_campañas_real["Conversiones"].sum()
+        fmin_c, fmax_c = df_campañas_real["Fecha"].min().date(), df_campañas_real["Fecha"].max().date()
+        st.caption(f"Datos reales disponibles: {fmin_c} → {fmax_c} · {len(df_campañas_real):,} filas de "
+                  "performance diaria. Si esperabas fechas más recientes, es que tu export/Google Sheet "
+                  "todavía no las tiene — sube uno más actualizado para verlas aquí.")
+
+        st.markdown("##### 📅 Filtrar por periodo")
+        fc1, fc2 = st.columns(2)
+        rango_ini = fc1.date_input("Desde:", value=fmin_c, min_value=fmin_c, max_value=fmax_c, key="sem_rango_ini")
+        rango_fin = fc2.date_input("Hasta:", value=fmax_c, min_value=fmin_c, max_value=fmax_c, key="sem_rango_fin")
+        if rango_ini > rango_fin:
+            st.error("'Desde' debe ser anterior a 'Hasta'. Mostrando el rango completo mientras lo corriges.")
+            rango_ini, rango_fin = fmin_c, fmax_c
+
+        df_campañas_filt = df_campañas_real[(df_campañas_real["Fecha"].dt.date >= rango_ini) &
+                                            (df_campañas_real["Fecha"].dt.date <= rango_fin)]
+        df_terminos_filt = None
+        if df_terminos_real is not None and not df_terminos_real.empty and df_terminos_real["Fecha"].notna().any():
+            df_terminos_filt = df_terminos_real[(df_terminos_real["Fecha"].dt.date >= rango_ini) &
+                                                (df_terminos_real["Fecha"].dt.date <= rango_fin)]
+        else:
+            df_terminos_filt = df_terminos_real  # sin columna Fecha utilizable: se usa sin filtrar
+
+        if df_campañas_filt.empty:
+            st.warning("No hay datos de Campañas en ese rango de fechas.")
+        total_gasto = df_campañas_filt["Coste"].sum()
+        total_retorno = df_campañas_filt["Valor Conversión"].sum()
+        total_conv = df_campañas_filt["Conversiones"].sum()
         roas_global = (total_retorno / total_gasto) if total_gasto > 0 else 0
         cpa_global = (total_gasto / total_conv) if total_conv > 0 else np.nan
-        fmin_c, fmax_c = df_campañas_real["Fecha"].min().date(), df_campañas_real["Fecha"].max().date()
-        st.caption(f"Datos reales: {fmin_c} → {fmax_c} · {len(df_campañas_real):,} filas de performance diaria.")
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Gasto real", f"{total_gasto:,.2f} €")
         c2.metric("Retorno real", f"{total_retorno:,.2f} €")
@@ -2473,11 +2495,11 @@ elif hemisferio == "🛰️ SEM (Performance & Subastas)":
         st.subheader("📈 Evolución real de gasto vs retorno")
         gran = st.radio("Granularidad:", ["Diaria", "Mensual"], horizontal=True, key="sem_gran")
         if gran == "Mensual":
-            df_trend_real = df_campañas_real.groupby("Mes", as_index=False).agg(
+            df_trend_real = df_campañas_filt.groupby("Mes", as_index=False).agg(
                 Coste=("Coste", "sum"), **{"Valor Conversión": ("Valor Conversión", "sum")})
             eje_x = "Mes"
         else:
-            df_trend_real = df_campañas_real.groupby("Fecha", as_index=False).agg(
+            df_trend_real = df_campañas_filt.groupby("Fecha", as_index=False).agg(
                 Coste=("Coste", "sum"), **{"Valor Conversión": ("Valor Conversión", "sum")})
             eje_x = "Fecha"
         fig = go.Figure()
@@ -2489,7 +2511,7 @@ elif hemisferio == "🛰️ SEM (Performance & Subastas)":
 
         st.divider()
         st.subheader("📊 Rendimiento real por campaña")
-        camp_agg = agg_ads_performance(df_campañas_real, ["Campaña"]).sort_values("Coste", ascending=False)
+        camp_agg = agg_ads_performance(df_campañas_filt, ["Campaña"]).sort_values("Coste", ascending=False)
         st.dataframe(camp_agg.style.format({"Coste": "{:,.2f} €", "Valor Conversión": "{:,.0f} €",
                                             "ROAS": "{:.2f}x", "CPA": "{:,.2f} €"}),
                     use_container_width=True, hide_index=True)
@@ -2502,7 +2524,8 @@ elif hemisferio == "🛰️ SEM (Performance & Subastas)":
     st.divider()
     st.subheader("🔍 Términos de búsqueda: gasto real (SEM) vs posición real (SEO)")
     dfq_sem = st.session_state.gsc_queries
-    terminos_agg = agg_ads_performance(df_terminos_real, ["Término", "Vertical"]) if df_terminos_real is not None else None
+    terminos_para_agg = df_terminos_filt if hay_datos_reales else df_terminos_real
+    terminos_agg = agg_ads_performance(terminos_para_agg, ["Término", "Vertical"]) if terminos_para_agg is not None else None
 
     tab_sem_real, tab_seo_real = st.tabs(["🛰️ Gasto real (Google Ads)", "📡 Posición real (Search Console)"])
     with tab_sem_real:
@@ -2658,10 +2681,12 @@ elif hemisferio == "🛰️ SEM (Performance & Subastas)":
             st.markdown("**Rango A**")
             a1, a2 = st.columns(2)
             ia = a1.date_input("A · Desde:", value=fmin, min_value=fmin, max_value=fmax, key="ads_ia")
-            fa = a2.date_input("A · Hasta:", value=fmin + timedelta(days=90), min_value=fmin, max_value=fmax, key="ads_fa")
+            fa = a2.date_input("A · Hasta:", value=min(fmin + timedelta(days=90), fmax),
+                               min_value=fmin, max_value=fmax, key="ads_fa")
             st.markdown("**Rango B**")
             b1, b2 = st.columns(2)
-            ib = b1.date_input("B · Desde:", value=fmax - timedelta(days=90), min_value=fmin, max_value=fmax, key="ads_ib")
+            ib = b1.date_input("B · Desde:", value=max(fmax - timedelta(days=90), fmin),
+                               min_value=fmin, max_value=fmax, key="ads_ib")
             fb = b2.date_input("B · Hasta:", value=fmax, min_value=fmin, max_value=fmax, key="ads_fb")
             if ia <= fa and ib <= fb:
                 ra, rb = resumen_rango(ch, ia, fa), resumen_rango(ch, ib, fb)
