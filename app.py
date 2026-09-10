@@ -784,6 +784,16 @@ ADS_EXPORT_SHEET_NAMES = {
     "negativas": "Negativas",
     "cambios": "Historial_Cambios",
 }
+# Nombres de pestaña recomendados para el complemento "Search Analytics for
+# Sheets" (Consultas / Páginas / Fechas). Si se usan estos nombres exactos al
+# configurar el complemento, la carga automática los reconoce solos; si el
+# usuario les pone otro nombre, siempre puede cargarlos a mano desde "🔗
+# Conectar Google Sheets" -> "Auto-detectar una pestaña".
+GSC_SHEET_NAMES = {
+    "consultas": "GSC_Consultas",
+    "paginas": "GSC_Paginas",
+    "fechas": "GSC_Fechas",
+}
 
 ADS_PERF_COLMAP = {
     "campaña": ["campaña", "campaign"],
@@ -1051,10 +1061,12 @@ def _autodetect_ads_workbook(sheet_dict):
 
 def auto_load_default_sheet():
     """Se ejecuta UNA vez por sesión (ver el guard en la barra lateral):
-    intenta cargar las 5 pestañas conocidas de la exportación de Google Ads
-    desde DEFAULT_GOOGLE_SHEET_URL. No lanza excepciones ni bloquea la app si
-    la hoja no es pública o falta alguna pestaña -> cada resultado (ok/aviso)
-    queda en session_state.auto_load_log para mostrarlo en la barra lateral."""
+    intenta cargar las 5 pestañas conocidas de la exportación de Google Ads,
+    más las pestañas de Search Console (Consultas/Páginas/Fechas, p.ej. del
+    complemento "Search Analytics for Sheets"), desde DEFAULT_GOOGLE_SHEET_URL.
+    No lanza excepciones ni bloquea la app si la hoja no es pública o falta
+    alguna pestaña -> cada resultado (ok/aviso) queda en
+    session_state.auto_load_log para mostrarlo en la barra lateral."""
     log = []
     any_ok = False
     for tipo, tab_name in ADS_EXPORT_SHEET_NAMES.items():
@@ -1089,6 +1101,34 @@ def auto_load_default_sheet():
             any_ok = True
         else:
             log.append(("warn", f"'{tab_name}': leída pero no reconozco sus columnas"))
+
+    # --- Pestañas de Search Console (p.ej. desde el complemento "Search
+    # Analytics for Sheets"): Consultas, Páginas y, opcionalmente, Fechas
+    # (serie temporal). Se clasifican por columnas con la misma lógica que
+    # un archivo subido a mano, no por el nombre exacto de la pestaña.
+    for tipo, tab_name in GSC_SHEET_NAMES.items():
+        df_raw, msg, metodo = _cached_fetch_google_sheet(DEFAULT_GOOGLE_SHEET_URL, tab_name)
+        if df_raw is None:
+            log.append(("warn", f"'{tab_name}': no disponible ({msg.splitlines()[0] if msg else 'sin detalle'})"))
+            continue
+        r = _classify_and_normalize_df(df_raw)
+        got = False
+        if r["queries"] is not None:
+            st.session_state.gsc_queries = r["queries"]; got = True
+        if r["pages"] is not None:
+            st.session_state.gsc_pages = r["pages"]; got = True
+        if r.get("timeseries") is not None:
+            st.session_state.gsc_ts = r["timeseries"]; got = True
+        if r["index_urls"] is not None:
+            issue = r["index_issue"] or tab_name
+            st.session_state.gsc_index = [x for x in st.session_state.gsc_index if x[0] != issue]
+            st.session_state.gsc_index.append((issue, r["index_urls"])); got = True
+        if got:
+            log.append(("ok", f"'{tab_name}': {r['msg']}"))
+            any_ok = True
+        else:
+            log.append(("warn", f"'{tab_name}': leída pero no reconozco sus columnas ({r['msg']})"))
+
     st.session_state.auto_load_log = log
     st.session_state.auto_load_attempted = True
     st.session_state.auto_load_any_ok = any_ok
