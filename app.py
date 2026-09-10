@@ -784,15 +784,18 @@ ADS_EXPORT_SHEET_NAMES = {
     "negativas": "Negativas",
     "cambios": "Historial_Cambios",
 }
-# Nombres de pestaña recomendados para el complemento "Search Analytics for
-# Sheets" (Consultas / Páginas / Fechas). Si se usan estos nombres exactos al
-# configurar el complemento, la carga automática los reconoce solos; si el
-# usuario les pone otro nombre, siempre puede cargarlos a mano desde "🔗
-# Conectar Google Sheets" -> "Auto-detectar una pestaña".
-GSC_SHEET_NAMES = {
-    "consultas": "GSC_Consultas",
-    "paginas": "GSC_Paginas",
-    "fechas": "GSC_Fechas",
+# Nombres de pestaña candidatos para las pestañas de Search Console (p.ej.
+# generadas con el complemento "Search Analytics for Sheets"). Se prueba cada
+# variante en orden hasta que una responda con datos reconocibles: así no
+# depende de que el usuario use guion bajo, guion, o tilde exactamente igual
+# que se documentó. Si ninguna variante coincide, se puede cargar igualmente
+# a mano desde "🔗 Conectar Google Sheets" -> "Auto-detectar una pestaña".
+GSC_SHEET_NAME_CANDIDATES = {
+    "consultas": ["GSC_Consultas", "GSC-Consultas", "GSC_Consulta", "GSC-Consulta",
+                 "GSC Consultas"],
+    "paginas": ["GSC_Paginas", "GSC-Paginas", "GSC_Páginas", "GSC-Páginas",
+               "GSC Paginas", "GSC Páginas"],
+    "fechas": ["GSC_Fechas", "GSC-Fechas", "GSC Fechas"],
 }
 
 ADS_PERF_COLMAP = {
@@ -1091,7 +1094,7 @@ def auto_load_default_sheet():
             if out is not None:
                 st.session_state.ads_perf_negatives = out
         elif tipo == "cambios":
-            out = _parse_ads_df(df_raw)
+            out = _try_parse_ads_change_history(df_raw)
             if out is not None:
                 st.session_state.ads_changes = out
         else:
@@ -1104,30 +1107,52 @@ def auto_load_default_sheet():
 
     # --- Pestañas de Search Console (p.ej. desde el complemento "Search
     # Analytics for Sheets"): Consultas, Páginas y, opcionalmente, Fechas
-    # (serie temporal). Se clasifican por columnas con la misma lógica que
-    # un archivo subido a mano, no por el nombre exacto de la pestaña.
-    for tipo, tab_name in GSC_SHEET_NAMES.items():
-        df_raw, msg, metodo = _cached_fetch_google_sheet(DEFAULT_GOOGLE_SHEET_URL, tab_name)
-        if df_raw is None:
-            log.append(("warn", f"'{tab_name}': no disponible ({msg.splitlines()[0] if msg else 'sin detalle'})"))
-            continue
-        r = _classify_and_normalize_df(df_raw)
-        got = False
-        if r["queries"] is not None:
-            st.session_state.gsc_queries = r["queries"]; got = True
-        if r["pages"] is not None:
-            st.session_state.gsc_pages = r["pages"]; got = True
-        if r.get("timeseries") is not None:
-            st.session_state.gsc_ts = r["timeseries"]; got = True
-        if r["index_urls"] is not None:
-            issue = r["index_issue"] or tab_name
-            st.session_state.gsc_index = [x for x in st.session_state.gsc_index if x[0] != issue]
-            st.session_state.gsc_index.append((issue, r["index_urls"])); got = True
-        if got:
-            log.append(("ok", f"'{tab_name}': {r['msg']}"))
-            any_ok = True
-        else:
-            log.append(("warn", f"'{tab_name}': leída pero no reconozco sus columnas ({r['msg']})"))
+    # (serie temporal). Se prueba cada variante de nombre candidata; además se
+    # descarta cualquier respuesta que "huela" a una pestaña de Ads (columnas
+    # tipo Campaña/Coste) sin nada de Query/Page, porque el endpoint público
+    # de Google sirve la PRIMERA pestaña del documento EN SILENCIO cuando el
+    # nombre pedido no existe -> sin este filtro, un nombre de pestaña mal
+    # escrito contamina el SEO real con datos de Ads sin avisar (esto es
+    # justo lo que pasó con GSC_Consultas vs GSC-Consultas).
+    def _parece_fallback_de_ads(df):
+        if df is None or df.empty:
+            return False
+        cols_lower = [c.lower().strip() for c in df.columns]
+        parece_ads = any(k in cols_lower for k in
+                         ["coste (eur)", "coste (€)", "coste", "campaña", "campaign"])
+        tiene_gsc = any(("query" in c) or ("page" in c) or ("término de búsqueda" in c) or
+                        ("termino de busqueda" in c) or ("palabra clave" in c) or
+                        ("término negativizado" in c) for c in cols_lower)
+        return parece_ads and not tiene_gsc
+
+    for tipo, candidatos in GSC_SHEET_NAME_CANDIDATES.items():
+        encontrado = False
+        for tab_name in candidatos:
+            df_raw, msg, metodo = _cached_fetch_google_sheet(DEFAULT_GOOGLE_SHEET_URL, tab_name)
+            if df_raw is None:
+                continue
+            if _parece_fallback_de_ads(df_raw):
+                continue  # el nombre no existe: Google devolvió otra pestaña (Ads) sin avisar
+            r = _classify_and_normalize_df(df_raw)
+            got = False
+            if r["queries"] is not None:
+                st.session_state.gsc_queries = r["queries"]; got = True
+            if r["pages"] is not None:
+                st.session_state.gsc_pages = r["pages"]; got = True
+            if r.get("timeseries") is not None:
+                st.session_state.gsc_ts = r["timeseries"]; got = True
+            if r["index_urls"] is not None:
+                issue = r["index_issue"] or tab_name
+                st.session_state.gsc_index = [x for x in st.session_state.gsc_index if x[0] != issue]
+                st.session_state.gsc_index.append((issue, r["index_urls"])); got = True
+            if got:
+                log.append(("ok", f"'{tab_name}': {r['msg']}"))
+                any_ok = True
+                encontrado = True
+                break
+        if not encontrado:
+            log.append(("warn", f"GSC ({tipo}): ninguna pestaña candidata coincidió "
+                                f"({', '.join(candidatos)})"))
 
     st.session_state.auto_load_log = log
     st.session_state.auto_load_attempted = True
@@ -2122,7 +2147,7 @@ with st.sidebar:
                             continue
                         fn = {"campañas": normalize_ads_campaigns, "terminos": normalize_ads_search_terms,
                               "keywords": normalize_ads_keywords, "negativas": normalize_ads_negatives,
-                              "cambios": _parse_ads_df}[tipo]
+                              "cambios": _try_parse_ads_change_history}[tipo]
                         out = fn(df_raw)
                         if out is None or out.empty:
                             continue
