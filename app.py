@@ -1866,6 +1866,110 @@ def render_meta_box(data):
     </div>""", unsafe_allow_html=True)
 
 
+# ==========================================
+# 2.f "EL PROFESOR": ANÁLISIS EXPERTO AL PIE DE CADA MÓDULO
+#     No cambia nada de lo que ya se ve en el dashboard: añade, al final de
+#     cada apartado, la lectura de un consultor SEO/SEM veterano sobre los
+#     datos REALES que haya cargados en ese momento -- qué está pasando, si
+#     es bueno o malo, si mejora, qué explotar más, y sobre todo dónde se
+#     está gastando presupuesto/tiempo sin retorno real (con matiz: muchas
+#     keywords o páginas de bajo tráfico individual SÍ pueden sumar en
+#     conjunto, así que se juzga el conjunto, no la unidad).
+#     Usa la misma API de Anthropic que el Content Factory. Cacheado por el
+#     contenido real de los datos (no por tiempo fijo): mismos datos -> misma
+#     lectura (gratis, cacheada); datos nuevos -> análisis nuevo automático.
+#     Sin ANTHROPIC_API_KEY, cae a un resumen de las cifras en bruto.
+# ==========================================
+SYSTEM_PROMPT_PROFESOR = (
+    "Eres un consultor de posicionamiento (SEO/SEM) con más de dos décadas en el "
+    "sector, con un historial de haber llevado al Top 1 de Google a empresas de "
+    "sectores muy distintos cada vez que te has hecho cargo de su estrategia digital. "
+    "Ahora estás al mando de la estrategia digital de Wheely Fog (alquiler y venta de "
+    "furgonetas camper en Rafelbunyol, Valencia) y tu misión personal es convertirla "
+    "en la marca número 1 del sector camper en España. Te juegas tu reputación en ello.\n\n"
+    "Vas a comentar UN módulo del panel de control interno de Wheely Fog, usando SOLO "
+    "los datos reales que se te dan en el mensaje (nunca inventes una cifra que no "
+    "esté ahí; si falta un dato para opinar de algo, dilo en vez de suponerlo). "
+    "Escribe para que lo entienda CUALQUIER persona de la empresa, no solo marketing: "
+    "nada de jerga sin explicarla en la misma frase.\n\n"
+    "Estructura tu comentario, en prosa corrida (no uses listas ni encabezados), así:\n"
+    "1. Qué está pasando ahora mismo en este módulo, en 2-3 frases (el diagnóstico).\n"
+    "2. Si eso es bueno, malo o mixto, y si la tendencia mejora o empeora (cuando haya "
+    "dato para saberlo; si no lo hay, dilo).\n"
+    "3. Sé crítico de verdad: si detectas presupuesto, tiempo o esfuerzo puesto en algo "
+    "que no aporta nada al conjunto, dilo explícitamente y con números concretos. "
+    "Pero con matiz: en SEO, muchas páginas o palabras clave de bajo tráfico "
+    "individual pueden sumar un volumen relevante juntas -- no las trates como "
+    "desperdicio solo por ser pequeñas una a una; juzga el conjunto, no la unidad "
+    "aislada.\n"
+    "4. Cierra con 2-4 acciones concretas y accionables para explotar mejor lo que ya "
+    "existe o corregir lo que no funciona -- nunca genéricas tipo 'mejorar el SEO'.\n\n"
+    "Máximo 180 palabras. Tono directo, de experto que se juega su prestigio en esto, "
+    "sin frases de relleno tipo 'es importante destacar' ni cortesías de apertura."
+)
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def _analisis_experto_llm(modulo_id, guia, contexto_json):
+    """Llama a Claude para generar el comentario del profesor sobre un
+    módulo. Cacheado por (modulo_id, guia, contexto_json): si los datos
+    reales no han cambiado, se reutiliza la misma lectura sin gastar tokens;
+    en cuanto cambian los datos, contexto_json cambia y se genera una lectura
+    nueva sola. Devuelve None si no hay API key o falla la llamada (el caller
+    debe usar el resumen de respaldo en ese caso)."""
+    client = _get_anthropic_client()
+    if client is None:
+        return None
+    user_prompt = (
+        f"MÓDULO DEL PANEL: {modulo_id}\n\n"
+        f"QUÉ MIRAR ESPECÍFICAMENTE EN ESTE MÓDULO:\n{guia}\n\n"
+        f"DATOS REALES DISPONIBLES AHORA MISMO (JSON):\n{contexto_json}\n\n"
+        "Escribe tu análisis siguiendo la estructura indicada."
+    )
+    try:
+        resp = client.messages.create(
+            model="claude-sonnet-4-6", max_tokens=700,
+            system=SYSTEM_PROMPT_PROFESOR,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        texto = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+        return texto or None
+    except Exception:
+        return None
+
+
+def _resumen_bruto_fallback(contexto):
+    """Respaldo sin IA: reexpresa el contexto en frases sencillas de datos en
+    bruto (sin juicio crítico) cuando no hay ANTHROPIC_API_KEY configurada."""
+    partes = []
+    for k, v in contexto.items():
+        if v is None or v == [] or v == {}:
+            continue
+        etiqueta = k.replace("_", " ")
+        if isinstance(v, (list, dict)):
+            partes.append(f"**{etiqueta}**: {len(v)} elemento(s)")
+        else:
+            partes.append(f"**{etiqueta}**: {v}")
+    return " · ".join(partes) if partes else "Todavía no hay datos suficientes en este módulo."
+
+
+def render_analisis_experto(modulo_id, titulo_modulo, guia, contexto):
+    """Renderiza, al pie del módulo, el comentario del profesor. No toca
+    nada del contenido existente del módulo: se coloca siempre al final."""
+    st.divider()
+    st.markdown(f"##### 🎓 Lo que opina el experto sobre «{titulo_modulo}»")
+    contexto_limpio = {k: v for k, v in contexto.items() if v is not None}
+    contexto_json = json.dumps(contexto_limpio, ensure_ascii=False, sort_keys=True, default=str)
+    with st.container(border=True):
+        texto = _analisis_experto_llm(modulo_id, guia, contexto_json)
+        if texto:
+            st.markdown(texto)
+        else:
+            st.caption("🔑 Configura tu `ANTHROPIC_API_KEY` para el análisis crítico completo "
+                      "del experto. De momento, un resumen simple de las cifras:")
+            st.markdown(_resumen_bruto_fallback(contexto_limpio))
+
+
 # --- Motor heurístico de recomendaciones SEM/SEO (cruce SEO x SEM sintético) ---
 INTENT_COMPRA = ["comprar", "compra", "segunda mano", "venta", "vender", "ocasion", "km0", "km 0"]
 INTENT_ALQUILER = ["alquiler", "alquilar", "rent", "fin de semana", "ruta", "escapada"]
@@ -2357,6 +2461,32 @@ if hemisferio == "🤖 Recomendaciones del Agente":
                 st.session_state.rec_estado[r["id"]] = "descartada"
                 st.rerun()
 
+    contexto_reco = {
+        "total_recomendaciones_activas": len(recomendaciones),
+        "prioridad_alta": len([r for r in recomendaciones if r["sev"] == "alta"]),
+        "prioridad_media": len([r for r in recomendaciones if r["sev"] == "media"]),
+        "informativas": len([r for r in recomendaciones if r["sev"] == "info"]),
+        "aplicadas_por_el_equipo": len([r for r in recomendaciones if st.session_state.rec_estado.get(r["id"]) == "aplicada"]),
+        "descartadas_por_el_equipo": len([r for r in recomendaciones if st.session_state.rec_estado.get(r["id"]) == "descartada"]),
+        "pendientes_sin_revisar_todavia": len([r for r in recomendaciones if r["id"] not in st.session_state.rec_estado]),
+        "hay_datos_reales_seo_search_console": st.session_state.gsc_queries is not None,
+        "hay_datos_reales_sem_google_ads": st.session_state.ads_perf_terms is not None,
+        "ejemplos_prioridad_alta": [
+            {"keyword": r["kw"], "titulo": r["titulo"], "detalle": r["detalle"][:200]}
+            for r in recomendaciones if r["sev"] == "alta"
+        ][:6],
+    }
+    render_analisis_experto(
+        "recomendaciones_del_agente", "Recomendaciones del Agente",
+        "Este módulo agrega recomendaciones automáticas de SEO y SEM. Evalúa si el "
+        "equipo está realmente actuando sobre ellas (aplicadas/descartadas frente a "
+        "pendientes acumulándose sin tocar), si las de prioridad alta llevan tiempo "
+        "sin resolverse, y si el conjunto de recomendaciones ya se basa en datos "
+        "reales de Search Console y Google Ads o todavía en gran parte en datos de "
+        "demostración (lo cual limita cuánto valen estas recomendaciones).",
+        contexto_reco,
+    )
+
 
 # ==========================================
 # 6. MODULO SEM: PERFORMANCE Y BUSCADOR
@@ -2494,6 +2624,40 @@ elif hemisferio == "📡 SEO Real (Search Console)":
                         st.bar_chart(du["Vertical afectada"].value_counts())
                     st.dataframe(du, use_container_width=True, hide_index=True)
                     st.divider()
+
+    contexto_seo_real = {
+        "hay_datos_de_consultas": dfq is not None,
+        "hay_datos_de_paginas": dfp is not None,
+        "hay_serie_temporal": st.session_state.gsc_ts is not None,
+        "num_urls_con_problemas_indexacion": sum(len(dfu) for _, dfu in idx) if idx else 0,
+    }
+    base_ctx = dfq if dfq is not None else dfp
+    if base_ctx is not None:
+        base_ctx = base_ctx.copy()
+        base_ctx["Vertical"] = base_ctx["termino"].apply(clasifica_vertical)
+        clics_ctx = int(base_ctx["Clics"].sum())
+        impr_ctx = int(base_ctx["Impresiones"].sum())
+        cp_ctx = base_ctx.dropna(subset=["Posicion"])
+        pos_ctx = ((cp_ctx["Posicion"] * cp_ctx["Impresiones"]).sum() /
+                  max(cp_ctx["Impresiones"].sum(), 1)) if not cp_ctx.empty else None
+        contexto_seo_real.update({
+            "clics_totales": clics_ctx,
+            "impresiones_totales": impr_ctx,
+            "ctr_medio_pct": round((clics_ctx / impr_ctx * 100), 1) if impr_ctx else 0,
+            "posicion_media_ponderada": round(float(pos_ctx), 1) if pos_ctx is not None else None,
+            "clics_por_vertical": base_ctx.groupby("Vertical")["Clics"].sum().sort_values(ascending=False).to_dict(),
+            "terminos_distintos": int(base_ctx["termino"].nunique()),
+        })
+    render_analisis_experto(
+        "seo_real_search_console", "SEO Real (Search Console)",
+        "Este módulo muestra tráfico orgánico REAL por vertical de negocio (alquiler, "
+        "venta, marca, camperización). Juzga si el peso de cada vertical tiene sentido "
+        "para el negocio de Wheely Fog, si la posición media ponderada es competitiva, "
+        "si el CTR es sano para esa posición media, y si las URLs con problemas de "
+        "indexación están dejando tráfico real sobre la mesa. Recuerda: muchas keywords "
+        "de bajo tráfico individual pueden sumar un volumen relevante en conjunto.",
+        contexto_seo_real,
+    )
 
 
 elif hemisferio == "🛰️ SEM (Performance & Subastas)":
@@ -2801,6 +2965,49 @@ elif hemisferio == "🛰️ SEM (Performance & Subastas)":
             else:
                 st.error("Revisa las fechas: cada 'Desde' debe ser anterior a su 'Hasta'.")
 
+    contexto_sem = {"hay_datos_reales_ads": st.session_state.ads_perf_campaigns is not None}
+    if st.session_state.ads_perf_campaigns is not None:
+        dfc_ctx = st.session_state.ads_perf_campaigns
+        gasto_ctx = float(dfc_ctx["Coste"].sum())
+        retorno_ctx = float(dfc_ctx["Valor Conversión"].sum())
+        contexto_sem.update({
+            "gasto_total_eur": round(gasto_ctx, 2),
+            "retorno_total_eur": round(retorno_ctx, 2),
+            "roas_global": round(retorno_ctx / gasto_ctx, 2) if gasto_ctx > 0 else 0,
+            "rango_fechas_disponible": f"{dfc_ctx['Fecha'].min().date()} a {dfc_ctx['Fecha'].max().date()}",
+        })
+        camp_agg_ctx = agg_ads_performance(dfc_ctx, ["Campaña"])
+        contexto_sem["rendimiento_por_campana"] = camp_agg_ctx[
+            ["Campaña", "Coste", "ROAS", "Conversiones"]].round(2).to_dict("records")
+    if st.session_state.ads_perf_terms is not None:
+        t_agg_ctx = agg_ads_performance(st.session_state.ads_perf_terms, ["Término", "Vertical"])
+        contexto_sem["top_10_terminos_por_gasto"] = t_agg_ctx.sort_values(
+            "Coste", ascending=False).head(10)[["Término", "Vertical", "Coste", "ROAS"]].round(2).to_dict("records")
+        contexto_sem["gasto_por_vertical"] = t_agg_ctx.groupby("Vertical")["Coste"].sum().round(2).to_dict()
+        if st.session_state.ads_perf_negatives is not None:
+            ya_neg_ctx = set(st.session_state.ads_perf_negatives["Término negativizado"].str.lower())
+            erosion_ctx = t_agg_ctx[t_agg_ctx["Término"].apply(erosiona_premium) &
+                                    ~t_agg_ctx["Término"].str.lower().isin(ya_neg_ctx)]
+            contexto_sem["terminos_erosionan_premium_sin_negativizar"] = erosion_ctx["Término"].tolist()[:10]
+    if st.session_state.ads_changes is not None:
+        chd_ctx = st.session_state.ads_changes
+        dias_span_ctx = max((chd_ctx["Fecha"].max() - chd_ctx["Fecha"].min()).days, 1)
+        contexto_sem["actividad_en_la_cuenta"] = {
+            "cambios_totales": len(chd_ctx),
+            "dias_cubiertos_por_el_historial": dias_span_ctx,
+            "cambios_por_semana_promedio": round(len(chd_ctx) / max(dias_span_ctx / 7, 0.1), 2),
+        }
+    render_analisis_experto(
+        "sem_performance_subastas", "SEM (Performance & Subastas)",
+        "Aquí se audita gasto REAL de Google Ads: qué campañas y términos generan "
+        "retorno y cuáles queman presupuesto sin él, si la lista de negativas está al "
+        "día frente a términos que erosionan el posicionamiento premium, y si la "
+        "cuenta se trabaja con la frecuencia que necesita una cuenta activa (o lleva "
+        "tiempo desatendida). Sé explícito con los euros que se están perdiendo o que "
+        "se podrían escalar, y con qué vertical (alquiler/venta/marca) concentra el gasto.",
+        contexto_sem,
+    )
+
 
 # ==========================================
 # 7. MODULO SEO: CONTENT FACTORY
@@ -2964,6 +3171,38 @@ elif hemisferio == "📝 SEO (Content Factory Orgánico)":
                          title="Burbujas grandes a la izquierda (baja dificultad) = oportunidades")
     st.plotly_chart(fig_seo, use_container_width=True)
 
+    articulos_por_vertical = {}
+    articulos_por_origen = {}
+    for a in st.session_state.articulos_log:
+        articulos_por_vertical[a["vertical"]] = articulos_por_vertical.get(a["vertical"], 0) + 1
+        articulos_por_origen[a["origen"]] = articulos_por_origen.get(a["origen"], 0) + 1
+    contexto_cf = {
+        "articulos_generados_total": len(st.session_state.articulos_log),
+        "articulos_generados_con_ia_real": len([a for a in st.session_state.articulos_log if a.get("data")]),
+        "articulos_por_vertical": articulos_por_vertical,
+        "articulos_por_origen": articulos_por_origen,
+        "hay_calendario_editorial_conectado": st.session_state.content_calendar is not None,
+        "calendario_articulos_pendientes": (
+            int((st.session_state.content_calendar["Estado"].str.lower() == "pendiente").sum())
+            if st.session_state.content_calendar is not None else None
+        ),
+        "hay_datos_reales_de_demanda_gsc": st.session_state.gsc_queries is not None,
+        "redaccion_ia_activa": _get_anthropic_client() is not None,
+    }
+    render_analisis_experto(
+        "content_factory_seo", "SEO (Content Factory Orgánico)",
+        "Este módulo genera contenido SEO nuevo. Juzga si la producción está alineada "
+        "con oportunidades reales de tráfico de Search Console o si se escribe a "
+        "ciegas por patrones de sector; si hay un calendario editorial con pendientes "
+        "acumulándose sin producirse; y si el reparto de artículos por vertical tiene "
+        "sentido para el negocio (por ejemplo, invertir mucho contenido en "
+        "camperización no tiene sentido todavía porque ese servicio está solo en lista "
+        "de espera, 'Próximamente'). Recuerda: muchas piezas de contenido de nicho "
+        "pueden sumar tráfico relevante en conjunto aunque cada una por separado "
+        "parezca poca cosa.",
+        contexto_cf,
+    )
+
 
 # ==========================================
 # 8. MODULO: AUDITORIA CRUZADA
@@ -3036,3 +3275,29 @@ elif hemisferio == "🔑 Auditoría Cruzada (SEO vs SEM)":
     st.plotly_chart(fig_q, use_container_width=True)
 
     st.info("Las acciones rápidas viven en el módulo **🤖 Recomendaciones del Agente**, donde cada cambio se aprueba antes de tocar Google Ads (humano en el bucle).")
+
+    contexto_aud = {
+        "hay_cruce_real_sem_seo": (st.session_state.ads_perf_terms is not None
+                                    and st.session_state.gsc_queries is not None),
+    }
+    if contexto_aud["hay_cruce_real_sem_seo"]:
+        t_agg_aud = agg_ads_performance(st.session_state.ads_perf_terms, ["Término", "Vertical"])
+        gsc_aud = st.session_state.gsc_queries.copy()
+        gsc_aud["kw_lower"] = gsc_aud["termino"].str.lower()
+        t_agg_aud["kw_lower"] = t_agg_aud["Término"].str.lower()
+        rc_aud = t_agg_aud.merge(gsc_aud[["kw_lower", "Posicion"]], on="kw_lower", how="inner")
+        canib_aud = rc_aud[(rc_aud["Posicion"] <= 3) & (rc_aud["ROAS"] < 2) & (rc_aud["Coste"] > 20)]
+        contexto_aud.update({
+            "terminos_con_dato_real_en_ambos_canales": len(rc_aud),
+            "canibalizacion_detectada": canib_aud[["Término", "Coste", "ROAS", "Posicion"]].round(2).to_dict("records"),
+            "gasto_total_canibalizado_eur": round(float(canib_aud["Coste"].sum()), 2),
+        })
+    render_analisis_experto(
+        "auditoria_cruzada_seo_sem", "Auditoría Cruzada (SEO vs SEM)",
+        "Este módulo cruza el gasto REAL de Google Ads con la posición REAL orgánica "
+        "para el mismo término exacto. Sé explícito sobre cuánto dinero se está "
+        "gastando en clics que probablemente se ganarían gratis en orgánico "
+        "(canibalización), y si el reparto de esfuerzo entre SEO y SEM parece "
+        "coherente con lo que ya funciona solo de forma orgánica.",
+        contexto_aud,
+    )
