@@ -1939,8 +1939,8 @@ def _analisis_experto_llm(modulo_id, guia, contexto_json):
 
 
 def _resumen_bruto_fallback(contexto):
-    """Respaldo sin IA: reexpresa el contexto en frases sencillas de datos en
-    bruto (sin juicio crítico) cuando no hay ANTHROPIC_API_KEY configurada."""
+    """Último recurso genérico (solo si algún módulo futuro no tiene su
+    propio analizador de respaldo dedicado)."""
     partes = []
     for k, v in contexto.items():
         if v is None or v == [] or v == {}:
@@ -1953,9 +1953,671 @@ def _resumen_bruto_fallback(contexto):
     return " · ".join(partes) if partes else "Todavía no hay datos suficientes en este módulo."
 
 
+# ==========================================
+# 2.g AUDITOR EXPERTO (motor de reglas, sin coste de API)
+#     Sustituye a las reglas simples de respaldo por una auditoría
+#     sistemática al estilo de un consultor senior: veredicto puntuado
+#     (0-100), hallazgos ordenados por gravedad e impacto estimado en euros,
+#     y prioridades de la semana. Todo determinista: mismos datos, mismo
+#     informe, sin depender de una API de pago. Cada regla codifica un
+#     criterio profesional real (curva de CTR por posición, umbrales de
+#     ROAS, higiene de negativas, cadencia de cuenta, canibalización, etc.)
+#     y siempre aporta la evidencia numérica + la acción concreta.
+# ==========================================
+CTR_ESPERADO_POS = {1: .28, 2: .16, 3: .11, 4: .08, 5: .06, 6: .05,
+                    7: .04, 8: .032, 9: .028, 10: .025}
+
+
+def ctr_esperado_pos(pos):
+    """CTR orgánico medio esperable para una posición (curva estándar del sector)."""
+    if pos is None or pd.isna(pos):
+        return 0.01
+    p = int(round(pos))
+    if p <= 10:
+        return CTR_ESPERADO_POS.get(max(p, 1), .025)
+    return max(.02 - (p - 10) * 0.0015, 0.003)
+
+
+SEV_PESO = {"critico": 25, "alto": 15, "medio": 8, "bajo": 3, "positivo": -3}
+SEV_LABEL = {"critico": "🔴 CRÍTICO", "alto": "🟠 ALTO", "medio": "🟡 MEDIO",
+             "bajo": "🔵 A VIGILAR", "positivo": "🟢 BIEN"}
+_SEV_ORDEN = {"critico": 0, "alto": 1, "medio": 2, "bajo": 3, "positivo": 4}
+
+
+def _h(sev, titulo, evidencia, accion, impacto=None):
+    """Un hallazgo de auditoría: gravedad, título, evidencia con números,
+    acción concreta y, si procede, impacto económico estimado en euros."""
+    return {"sev": sev, "titulo": titulo, "evidencia": evidencia,
+            "accion": accion, "impacto": impacto}
+
+
+def _puntuar(hallazgos):
+    """Puntuación 0-100 objetiva: se parte de 100 y cada hallazgo resta según
+    gravedad (los positivos suman un poco). Mismo criterio para todos los
+    módulos -> los veredictos son comparables entre sí y en el tiempo."""
+    score = 100
+    for h in hallazgos:
+        score -= SEV_PESO.get(h["sev"], 0)
+    score = max(0, min(100, score))
+    sevs = {h["sev"] for h in hallazgos}
+    # Regla de auditor: con un hallazgo crítico o alto abierto, el veredicto
+    # nunca puede ser SANO por muchos positivos que haya alrededor.
+    if "critico" in sevs:
+        score = min(score, 59)
+    elif "alto" in sevs:
+        score = min(score, 79)
+    if score >= 80:
+        grado = "SANO"
+    elif score >= 60:
+        grado = "MEJORABLE"
+    elif score >= 40:
+        grado = "PREOCUPANTE"
+    else:
+        grado = "CRÍTICO"
+    return score, grado
+
+
+def _render_auditoria(veredicto, hallazgos, sin_datos_msg=None):
+    """Convierte veredicto + hallazgos en un informe en markdown: veredicto
+    puntuado, hallazgos por gravedad (y dentro de cada gravedad por impacto
+    en euros), y las 3 prioridades de la semana."""
+    if not hallazgos:
+        return sin_datos_msg or "No hay datos suficientes para auditar este módulo todavía."
+    score, grado = _puntuar(hallazgos)
+    hs = sorted(hallazgos, key=lambda h: (_SEV_ORDEN[h["sev"]], -(h["impacto"] or 0)))
+    md = [f"**Veredicto del auditor: {grado} · {score}/100.** {veredicto}", ""]
+    for h in hs:
+        imp = f" *(impacto estimado: {h['impacto']:,.0f} €)*" if h.get("impacto") else ""
+        md.append(f"**{SEV_LABEL[h['sev']]} — {h['titulo']}.** {h['evidencia']} → *{h['accion']}*{imp}")
+        md.append("")
+    prioridades = [h for h in hs if h["sev"] in ("critico", "alto", "medio")][:3]
+    if prioridades:
+        md.append("**Prioridades de esta semana (por gravedad e impacto):**")
+        for i, h in enumerate(prioridades, 1):
+            md.append(f"{i}. {h['accion']}")
+    return "\n".join(md)
+
+
+def auditar_sem():
+    """Auditoría completa de la cuenta de Google Ads con los datos reales cargados."""
+    ss = st.session_state
+    dfc, dft, dfk, dfn, ch = (ss.ads_perf_campaigns, ss.ads_perf_terms, ss.ads_perf_keywords,
+                              ss.ads_perf_negatives, ss.ads_changes)
+    H = []
+    if dfc is None or dfc.empty:
+        return _render_auditoria("", [], "Sin datos reales de Google Ads no puedo auditar nada con "
+                                 "rigor: conecta el export (Campañas/Términos) y vuelvo a pasar.")
+    gasto = float(dfc["Coste"].sum())
+    retorno = float(dfc["Valor Conversión"].sum())
+    conv = float(dfc["Conversiones"].sum())
+    roas = retorno / gasto if gasto > 0 else 0.0
+    dias = max((dfc["Fecha"].max() - dfc["Fecha"].min()).days + 1, 1)
+
+    # 1) Rentabilidad global
+    if roas < 1:
+        H.append(_h("critico", "La cuenta pierde dinero en conjunto",
+                    f"ROAS global {roas:.2f}x: {gasto:,.2f} € gastados han devuelto {retorno:,.2f} € "
+                    f"({int(conv)} conversiones) en {dias} días.",
+                    "Congelar el gasto de todo lo que no convierte antes de escalar nada: primero se tapa "
+                    "la fuga, luego se crece.", impacto=gasto - retorno))
+    elif roas < 2:
+        H.append(_h("alto", "Rentabilidad justa",
+                    f"ROAS global {roas:.2f}x sobre {gasto:,.2f} €: cubre el gasto con poco margen.",
+                    "Aislar las campañas y términos que arrastran la media hacia abajo y recortarlos."))
+    elif roas < 3:
+        H.append(_h("medio", "Rentabilidad aceptable pero no excelente",
+                    f"ROAS {roas:.2f}x sobre {gasto:,.2f} €.",
+                    "Mover presupuesto de los términos flojos a los que superan 3x."))
+    else:
+        H.append(_h("positivo", "La cuenta es rentable",
+                    f"ROAS {roas:.2f}x sobre {gasto:,.2f} €.",
+                    "Escalar con cabeza: subidas de presupuesto del 10-20% semanal, nunca de golpe."))
+
+    # 2) Tendencia dentro del periodo (primera mitad vs segunda mitad)
+    if dias >= 14:
+        mitad = dfc["Fecha"].min() + (dfc["Fecha"].max() - dfc["Fecha"].min()) / 2
+        a, b = dfc[dfc["Fecha"] <= mitad], dfc[dfc["Fecha"] > mitad]
+        ga, gb = float(a["Coste"].sum()), float(b["Coste"].sum())
+        ca, cb = float(a["Conversiones"].sum()), float(b["Conversiones"].sum())
+        if ca > 0 and cb < ca * 0.7:
+            H.append(_h("alto", "El rendimiento empeora dentro del propio periodo",
+                        f"Segunda mitad: {int(cb)} conversiones frente a {int(ca)} en la primera "
+                        f"(gasto {gb:,.0f} € vs {ga:,.0f} €).",
+                        "Revisar qué cambió a mitad de periodo (pujas, negativas, landing, estacionalidad) "
+                        "antes de que el mes cierre peor."))
+        elif ca > 0 and cb > ca * 1.3:
+            H.append(_h("positivo", "El rendimiento mejora dentro del periodo",
+                        f"Segunda mitad: {int(cb)} conversiones frente a {int(ca)} en la primera.",
+                        "Identificar qué se hizo bien y repetirlo."))
+
+    # 3) Campañas una a una
+    camp = agg_ads_performance(dfc, ["Campaña"])
+    for _, r in camp.iterrows():
+        if r["Coste"] > 50 and r["ROAS"] < 1:
+            H.append(_h("critico", f"La campaña '{r['Campaña']}' quema presupuesto",
+                        f"{r['Coste']:,.2f} € gastados, ROAS {r['ROAS']:.2f}x, {int(r['Conversiones'])} conversiones.",
+                        f"Pausar o reestructurar '{r['Campaña']}': revisar concordancias, negativas y "
+                        "landing antes de reactivarla.", impacto=float(r["Coste"] - r["Valor Conversión"])))
+        elif r["Coste"] > 50 and r["ROAS"] >= 3:
+            H.append(_h("positivo", f"La campaña '{r['Campaña']}' rinde",
+                        f"ROAS {r['ROAS']:.2f}x sobre {r['Coste']:,.2f} €.",
+                        "Candidata a recibir el presupuesto que se recorte de las campañas flojas."))
+
+    # 4) Términos de búsqueda (lo que de verdad dispara el gasto)
+    t = None
+    if dft is not None and not dft.empty:
+        t = agg_ads_performance(dft, ["Término", "Vertical"])
+        gasto_t = float(t["Coste"].sum())
+        fuga = t[(t["Coste"] >= 20) & (t["ROAS"] < 1)]
+        eur_fuga = float(fuga["Coste"].sum() - fuga["Valor Conversión"].sum())
+        if eur_fuga > 0 and gasto_t > 0:
+            pct = eur_fuga / gasto_t * 100
+            sev = "critico" if pct >= 40 else ("alto" if pct >= 20 else "medio")
+            top3 = ", ".join(f"'{x}'" for x in fuga.sort_values("Coste", ascending=False)["Término"].head(3))
+            H.append(_h(sev, "Términos de búsqueda que gastan sin devolver",
+                        f"{len(fuga)} términos con ≥20 € de gasto y ROAS < 1 suman {eur_fuga:,.2f} € netos "
+                        f"perdidos ({pct:.0f}% del gasto en términos). Los que más pesan: {top3}.",
+                        "Negativizar los irrelevantes; los que sí son de tu sector pero no convierten, "
+                        "bajar puja o pasarlos a concordancia exacta.", impacto=eur_fuga))
+        sin_conv = t[(t["Coste"] >= 30) & (t["Conversiones"] == 0)]
+        if len(sin_conv) > 0:
+            H.append(_h("medio", "Clics pagados que nunca convierten",
+                        f"{len(sin_conv)} términos con ≥30 € de gasto y cero conversiones "
+                        f"({float(sin_conv['Coste'].sum()):,.2f} €).",
+                        "Comprobar si la landing responde a esa intención; si no, negativizar o "
+                        "redirigir a una página específica.", impacto=float(sin_conv["Coste"].sum())))
+        top = t.sort_values("Coste", ascending=False).head(1)
+        if not top.empty and gasto_t > 0:
+            r0 = top.iloc[0]
+            share = float(r0["Coste"]) / gasto_t
+            if share > 0.3 and r0["ROAS"] < 1:
+                H.append(_h("alto", "Un solo término concentra el gasto y no rinde",
+                            f"'{r0['Término']}' se lleva el {share*100:.0f}% del gasto "
+                            f"({r0['Coste']:,.2f} €) con ROAS {r0['ROAS']:.2f}x.",
+                            "Bajar su puja o pasarlo a exacta y repartir ese presupuesto.",
+                            impacto=float(r0["Coste"] - r0["Valor Conversión"])))
+        por_v = t.groupby("Vertical")["Coste"].sum()
+        if gasto_t > 0:
+            camp_eur = float(por_v.get("CAMPERIZACION", 0))
+            if camp_eur / gasto_t > 0.05:
+                H.append(_h("alto", "Gasto en un servicio que aún no existe",
+                            f"El {camp_eur/gasto_t*100:.0f}% del gasto ({camp_eur:,.2f} €) va a términos de "
+                            "camperización, un servicio todavía en 'Próximamente'.",
+                            "Bajar a puja mínima o pausar; la lista de espera se capta con SEO, no con "
+                            "clics de pago.", impacto=camp_eur))
+            info_eur = float(por_v.get("INFORMACIONAL", 0))
+            if info_eur / gasto_t > 0.25:
+                H.append(_h("medio", "Demasiado gasto en búsquedas sin intención de reservar",
+                            f"El {info_eur/gasto_t*100:.0f}% del gasto va a términos informacionales "
+                            "(gente que se informa, no que reserva).",
+                            "Mover ese presupuesto a alquiler/venta; lo informacional se gana con "
+                            "contenido SEO, no con puja."))
+            marca_eur = float(por_v.get("MARCA", 0))
+            if marca_eur / gasto_t > 0.4:
+                H.append(_h("medio", "El gasto se apoya sobre todo en tu propia marca",
+                            f"El {marca_eur/gasto_t*100:.0f}% del gasto va a búsquedas de marca (gente "
+                            "que ya te conocía).",
+                            "Defender la marca es barato y correcto, pero el crecimiento viene de lo "
+                            "no-marca: reequilibrar."))
+            elif marca_eur >= 5:
+                H.append(_h("positivo", "Marca protegida en pago",
+                            f"{marca_eur:,.2f} € defienden tu marca frente a competidores que pujen por ella.",
+                            "Mantener."))
+            else:
+                H.append(_h("bajo", "Marca prácticamente sin defensa en pago",
+                            f"Solo {marca_eur:,.2f} € de gasto en búsquedas de tu marca: si un competidor "
+                            "puja por 'wheely fog', su anuncio saldrá encima de tu resultado orgánico.",
+                            "Campaña de marca con presupuesto mínimo (es de los clics más baratos y "
+                            "rentables que existen)."))
+        # Higiene de negativas
+        if dfn is not None and not dfn.empty:
+            ya = set(dfn["Término negativizado"].astype(str).str.lower())
+            eros = t[t["Término"].apply(erosiona_premium) & ~t["Término"].str.lower().isin(ya)]
+            if len(eros) > 0:
+                H.append(_h("medio", "Cazagangas sin filtrar",
+                            f"{len(eros)} términos tipo 'barato/chollo' con intención de compra "
+                            f"({float(eros['Coste'].sum()):,.2f} €) no están negativizados; chocan con una "
+                            "venta premium con historial.",
+                            f"Añadir como negativas de frase: {', '.join(eros['Término'].head(3))}.",
+                            impacto=float(eros["Coste"].sum())))
+            else:
+                H.append(_h("positivo", "Negativas al día frente a cazagangas",
+                            f"{len(dfn)} negativas activas y ningún término 'barato/chollo' de compra sin cubrir.",
+                            "Mantener la revisión semanal."))
+        else:
+            H.append(_h("bajo", "No consta lista de negativas",
+                        "No hay pestaña de Negativas cargada: no puedo verificar el filtrado de tráfico irrelevante.",
+                        "Exportarla en la próxima carga."))
+
+    # 5) Palabras clave gestionadas
+    if dfk is not None and not dfk.empty:
+        kw = agg_ads_performance(dfk, ["Palabra clave", "Concordancia", "Estado"])
+        conc = kw["Concordancia"].astype(str).str.upper()
+        broad = int(conc.str.contains("BROAD|AMPLIA").sum())
+        if len(kw) > 0 and broad / len(kw) > 0.5 and roas < 2:
+            H.append(_h("medio", "Concordancia amplia dominante",
+                        f"{broad} de {len(kw)} palabras clave ({broad/len(kw)*100:.0f}%) están en amplia con "
+                        f"un ROAS global de {roas:.2f}x: la amplia sin negativas férreas alimenta términos "
+                        "irrelevantes.",
+                        "Pasar a frase/exacta las que gastan sin convertir; dejar amplia solo con "
+                        "negativas bien trabajadas."))
+        activa = kw["Estado"].astype(str).str.upper().str.contains("ENABLED|HABILIT")
+        pausadas_buenas = kw[(~activa) & (kw["ROAS"] >= 3) & (kw["Coste"] > 20)]
+        if len(pausadas_buenas) > 0:
+            H.append(_h("medio", "Palabras clave rentables que están pausadas",
+                        f"{len(pausadas_buenas)} keywords con ROAS ≥ 3x están fuera de servicio "
+                        f"(p.ej. '{pausadas_buenas.iloc[0]['Palabra clave']}').",
+                        "Revisar por qué se pausaron y reactivarlas si el motivo ya no aplica."))
+
+    # 6) Cadencia de trabajo en la cuenta
+    if ch is not None and not ch.empty:
+        span = max((ch["Fecha"].max() - ch["Fecha"].min()).days, 1)
+        cps = len(ch) / max(span / 7, 0.1)
+        if span < 14:
+            H.append(_h("bajo", "Historial de cambios muy corto",
+                        f"Solo {span} días de historial ({len(ch)} cambios): insuficiente para juzgar la "
+                        "constancia del trabajo.",
+                        "Exportar un historial de 90 días en la próxima carga."))
+        elif cps < 1:
+            H.append(_h("alto", "Cuenta en piloto automático",
+                        f"{cps:.1f} cambios/semana en {span} días: una cuenta activa exige revisión semanal.",
+                        "Fijar una rutina semanal: negativas, pujas, creatividades, presupuesto."))
+        elif cps > 10:
+            H.append(_h("bajo", "Muchísimos cambios", f"{cps:.1f} cambios/semana.",
+                        "Verificar que no sea ruido (micro-cambios sin efecto medible)."))
+        else:
+            H.append(_h("positivo", "La cuenta se trabaja con regularidad",
+                        f"{cps:.1f} cambios/semana.", "Mantener."))
+    else:
+        H.append(_h("bajo", "Sin historial de cambios",
+                    "No puedo valorar si la cuenta se gestiona activamente.",
+                    "Cargar el historial de cambios."))
+
+    # 7) Tamaño de muestra
+    if dias < 14:
+        H.append(_h("bajo", "Muestra corta",
+                    f"Solo {dias} días de datos: las conclusiones son provisionales.",
+                    "Reevaluar con al menos 30 días."))
+
+    # 8) Cruce con SEO real (canibalización)
+    if t is not None and ss.gsc_queries is not None:
+        t2 = t.copy()
+        t2["k"] = t2["Término"].str.lower()
+        g = ss.gsc_queries.copy()
+        g["k"] = g["termino"].str.lower()
+        rc = t2.merge(g[["k", "Posicion"]], on="k", how="inner")
+        can = rc[(rc["Posicion"] <= 3) & (rc["ROAS"] < 2) & (rc["Coste"] > 20)]
+        if len(can) > 0:
+            H.append(_h("alto", "Pagas por clics que ya ganas gratis",
+                        f"{len(can)} términos están en Top 3 orgánico y aun así gastan "
+                        f"{float(can['Coste'].sum()):,.2f} € con ROAS < 2.",
+                        "Bajar puja un 40-60% en esos términos y medir si el tráfico total se mantiene.",
+                        impacto=float(can["Coste"].sum()) * 0.5))
+
+    if roas < 1:
+        cierre = "la prioridad absoluta es cortar la sangría antes de hablar de crecimiento."
+    elif roas < 3:
+        cierre = "hay base para optimizar el reparto y escalar lo que funciona."
+    else:
+        cierre = "la cuenta está sana; el trabajo ahora es escalar sin romper la eficiencia."
+    veredicto = f"Con {gasto:,.2f} € invertidos en {dias} días y un ROAS de {roas:.2f}x, {cierre}"
+    return _render_auditoria(veredicto, H)
+
+
+def auditar_seo_real():
+    """Auditoría orgánica completa con los datos reales de Search Console."""
+    ss = st.session_state
+    dfq, dfp, ts, idx = ss.gsc_queries, ss.gsc_pages, ss.gsc_ts, ss.gsc_index
+    H = []
+    base = dfq if dfq is not None else dfp
+    if base is None or base.empty:
+        return _render_auditoria("", [], "Sin datos de Search Console no hay auditoría orgánica "
+                                 "posible: conecta Consultas/Páginas y la hago.")
+    d = base.copy()
+    d["Vertical"] = d["termino"].apply(clasifica_vertical)
+    clics = int(d["Clics"].sum())
+    impr = int(d["Impresiones"].sum())
+    ctr = clics / impr if impr else 0.0
+    cp = d.dropna(subset=["Posicion"])
+    pos = (float((cp["Posicion"] * cp["Impresiones"]).sum() / max(cp["Impresiones"].sum(), 1))
+           if not cp.empty else None)
+
+    # 1) CTR real frente al esperable por posición
+    if not cp.empty and impr > 0:
+        esperado = float((cp["Posicion"].apply(ctr_esperado_pos) * cp["Impresiones"]).sum()
+                         / max(cp["Impresiones"].sum(), 1))
+        if esperado > 0:
+            ratio = ctr / esperado
+            if ratio < 0.7:
+                H.append(_h("alto", "Tus resultados no invitan a clicar",
+                            f"CTR real {ctr*100:.1f}% frente a un {esperado*100:.1f}% esperable para tus "
+                            f"posiciones: dejas de captar ~{int((esperado - ctr) * impr):,} clics respecto a lo normal.",
+                            "Reescribir title y meta description de las 10 páginas con más impresiones usando "
+                            "ganchos reales (seguro 0€, entrega 24/7, pet-friendly)."))
+            elif ratio > 1.15:
+                H.append(_h("positivo", "Tus snippets funcionan mejor que la media",
+                            f"CTR {ctr*100:.1f}% frente a {esperado*100:.1f}% esperable.",
+                            "Replicar el estilo de esos titles en el resto de páginas."))
+
+    # 2) Posición media
+    if pos is not None:
+        if pos > 10:
+            H.append(_h("alto", "Visibilidad media fuera de la primera página",
+                        f"Posición media ponderada {pos:.1f}: la mayoría de tus {impr:,} impresiones no "
+                        "se ven en página 1.",
+                        "Concentrar el esfuerzo en las keywords de página 2 con más impresiones."))
+        elif pos <= 5:
+            H.append(_h("positivo", "Posiciones fuertes", f"Posición media ponderada {pos:.1f}.",
+                        "El margen está en el CTR y en ampliar keywords, no en subir puestos."))
+
+    # 3) Oportunidades concretas (solo con datos de consultas)
+    if dfq is not None:
+        q = d[(d["Posicion"] >= 4) & (d["Posicion"] <= 10) & (d["Impresiones"] >= 50)].copy()
+        if not q.empty:
+            def _gan(r):
+                actual = r["CTR"] if pd.notna(r["CTR"]) and r["CTR"] > 0 else ctr_esperado_pos(r["Posicion"])
+                return max(int(r["Impresiones"] * (ctr_esperado_pos(3) - actual)), 0)
+            q["g"] = q.apply(_gan, axis=1)
+            tot = int(q["g"].sum())
+            if tot > 0:
+                top = ", ".join(f"'{x}'" for x in q.sort_values("g", ascending=False)["termino"].head(3))
+                H.append(_h("medio", "Clics recuperables sin crear contenido nuevo",
+                            f"{len(q)} keywords en posiciones 4-10 podrían aportar ~{tot:,} clics más subiendo "
+                            f"al Top 3. Las de mayor recorrido: {top}.",
+                            "Ajuste on-page por keyword: keyword exacta en H1/title y 2-3 enlaces internos "
+                            "desde páginas fuertes."))
+        p2 = d[(d["Posicion"] > 10) & (d["Posicion"] <= 20) & (d["Impresiones"] >= 150)]
+        if not p2.empty:
+            H.append(_h("medio", "Demanda que ni siquiera ves",
+                        f"{len(p2)} keywords en página 2 acumulan {int(p2['Impresiones'].sum()):,} "
+                        "impresiones y casi ningún clic.",
+                        "Reforzar las páginas que ya posicionan ahí (contenido + enlazado interno) para "
+                        "meterlas en página 1."))
+        top_bajo = d[(d["Posicion"] <= 5) & (d["Impresiones"] >= 200) & (d["CTR"] < 0.02)]
+        if not top_bajo.empty:
+            H.append(_h("medio", "Top 5 con CTR irrisorio",
+                        f"{len(top_bajo)} keywords en Top 5 con ≥200 impresiones y CTR < 2%.",
+                        "Arreglo de una línea: title y meta con gancho. Efecto casi inmediato."))
+
+    # 4) Dependencia de marca y peso de la venta
+    por_v = d.groupby("Vertical")["Clics"].sum()
+    if clics > 0:
+        marca = float(por_v.get("MARCA", 0))
+        ms = marca / clics
+        if ms > 0.5:
+            H.append(_h("alto", "Dependencia de marca",
+                        f"El {ms*100:.0f}% de los clics orgánicos son búsquedas de marca: el SEO no-marca "
+                        "(alquiler/venta genéricos) todavía no capta clientes nuevos.",
+                        "Priorizar contenido y on-page para términos genéricos de alquiler en Valencia."))
+        elif ms > 0.3:
+            H.append(_h("medio", "Peso alto de la marca", f"{ms*100:.0f}% de los clics son de marca.",
+                        "Vigilar que lo no-marca crezca más rápido que la marca."))
+        else:
+            H.append(_h("positivo", "El tráfico no depende solo de la marca",
+                        f"Marca = {ms*100:.0f}% de los clics; el resto llega por términos genéricos.",
+                        "Mantener."))
+        no_marca = clics - marca
+        vs = float(por_v.get("VENTA", 0))
+        if no_marca > 0 and vs / no_marca < 0.05:
+            H.append(_h("medio", "La vertical de venta es invisible en orgánico",
+                        f"Solo {int(vs)} clics ({vs/no_marca*100:.1f}% del no-marca) llegan por intención de "
+                        "compra, y Wheely Fog vende campers ex-flota.",
+                        "Crear/optimizar /venta y fichas por vehículo (historial, km, 'pruébala antes de comprar')."))
+
+    # 5) Valor agregado de la cola larga (juzgar el conjunto, no la unidad)
+    if dfq is not None and len(d) > 100:
+        small = d[d["Clics"] < 5]
+        if float(small["Clics"].sum()) > 0 and clics > 0:
+            H.append(_h("positivo", "La cola larga suma",
+                        f"{len(small):,} términos con menos de 5 clics cada uno aportan juntos "
+                        f"{int(small['Clics'].sum()):,} clics ({small['Clics'].sum()/clics*100:.0f}% del total).",
+                        "No recortar contenido de nicho por 'poco tráfico': en conjunto es un canal."))
+
+    # 6) Salud de indexación
+    n_idx = sum(len(u) for _, u in idx) if idx else 0
+    if n_idx > 0:
+        H.append(_h("alto" if n_idx >= 20 else "medio", "URLs fuera de juego",
+                    f"{n_idx} URLs con problemas de indexación (404, noindex, redirecciones...).",
+                    "Corregir o redirigir: es más barato que crear contenido nuevo."))
+
+    # 7) Tendencia mes a mes con contexto estacional
+    if ts is not None and not ts.empty:
+        meses = sorted(ts["Mes"].unique())
+        if len(meses) >= 2:
+            comp, concl = comparar_periodos(ts, meses[-2], meses[-1])
+            if comp:
+                dc = comp["delta"]["clics"]
+                causa = concl[-1][2] if concl else "Investigar la causa raíz."
+                if dc <= -15:
+                    H.append(_h("alto", "Los clics caen mes a mes",
+                                f"{meses[-2]} → {meses[-1]}: clics {dc:+.0f}%, impresiones "
+                                f"{comp['delta']['impr']:+.0f}%.", causa))
+                elif dc >= 15:
+                    H.append(_h("positivo", "Los clics crecen mes a mes",
+                                f"{meses[-2]} → {meses[-1]}: clics {dc:+.0f}%.",
+                                "Identificar qué páginas lo impulsan y doblarlas."))
+                try:
+                    mb = int(meses[-1].split("-")[1])
+                    H.append(_h("bajo", "Contexto estacional",
+                                f"{meses[-1]}: demanda de alquiler de camper típicamente "
+                                f"{ESTACIONALIDAD.get(mb, 'variable')}.",
+                                "Leer la variación real contra esta expectativa, no en abstracto."))
+                except Exception:
+                    pass
+
+    if pos is not None:
+        veredicto = (f"{clics:,} clics orgánicos sobre {impr:,} impresiones "
+                     f"(CTR {ctr*100:.1f}%, posición media {pos:.1f}).")
+    else:
+        veredicto = f"{clics:,} clics sobre {impr:,} impresiones."
+    return _render_auditoria(veredicto, H)
+
+
+def auditar_recomendaciones(recomendaciones):
+    """Auditoría de gobernanza: ¿se decide sobre las recomendaciones o se acumulan?"""
+    ss = st.session_state
+    H = []
+    total = len(recomendaciones)
+    if total == 0:
+        return _render_auditoria("", [], "No hay recomendaciones activas ahora mismo.")
+    estado = ss.rec_estado
+    alta = [r for r in recomendaciones if r["sev"] == "alta"]
+    aplicadas = [r for r in recomendaciones if estado.get(r["id"]) == "aplicada"]
+    descartadas = [r for r in recomendaciones if estado.get(r["id"]) == "descartada"]
+    pendientes = [r for r in recomendaciones if r["id"] not in estado]
+    alta_pend = [r for r in alta if r["id"] not in estado]
+
+    falta = []
+    if ss.gsc_queries is None:
+        falta.append("Search Console")
+    if ss.ads_perf_terms is None:
+        falta.append("Google Ads")
+    if falta:
+        H.append(_h("alto", "Recomendaciones parcialmente a ciegas",
+                    f"Falta conectar {' y '.join(falta)}: parte de la lista se apoya en datos de demostración.",
+                    "Conectar las fuentes reales; hasta entonces, tratar las recomendaciones sintéticas como "
+                    "ejemplos, no como órdenes."))
+    else:
+        H.append(_h("positivo", "Base de datos real completa",
+                    "SEO y SEM reales conectados: lo que hay en la lista es accionable de verdad.",
+                    "Mantener las fuentes actualizadas."))
+    if alta_pend:
+        H.append(_h("critico" if len(alta_pend) >= 3 else "alto", "Alertas de prioridad alta sin decisión",
+                    f"{len(alta_pend)} de {len(alta)} recomendaciones de prioridad alta siguen sin aplicar ni "
+                    f"descartar (p.ej. '{alta_pend[0]['kw']}': {alta_pend[0]['titulo']}).",
+                    "Decidir hoy sobre cada una, aplicar o descartar con motivo: dejarlas en el limbo cuesta dinero."))
+    ratio = (len(aplicadas) + len(descartadas)) / total
+    if ratio == 0:
+        H.append(_h("alto", "Nadie revisa la cola", f"0 de {total} recomendaciones han sido revisadas.",
+                    "Fijar una revisión semanal de 15 minutos de este módulo."))
+    elif ratio < 0.3:
+        H.append(_h("medio", "Revisión lenta",
+                    f"Solo el {ratio*100:.0f}% de las recomendaciones tienen decisión.",
+                    "Subir el ritmo de revisión."))
+    else:
+        H.append(_h("positivo", "La cola se gestiona",
+                    f"{ratio*100:.0f}% con decisión ({len(aplicadas)} aplicadas, {len(descartadas)} descartadas).",
+                    "Mantener."))
+    if len(descartadas) >= 5 and len(descartadas) > len(aplicadas) * 3:
+        H.append(_h("medio", "Se descarta mucho más de lo que se aplica",
+                    f"{len(descartadas)} descartadas frente a {len(aplicadas)} aplicadas.",
+                    "Si no encajan, ajustar los criterios del sistema; si sí encajan, cuidado con "
+                    "descartar por inercia."))
+    canales = {}
+    for r in recomendaciones:
+        canales[r["canal"]] = canales.get(r["canal"], 0) + 1
+    H.append(_h("bajo", "Reparto por canal", ", ".join(f"{k}: {v}" for k, v in canales.items()),
+                "Comprobar que ningún canal monopoliza la atención."))
+    veredicto = f"{total} recomendaciones activas ({len(alta)} de prioridad alta); {len(pendientes)} sin revisar."
+    return _render_auditoria(veredicto, H)
+
+
+def auditar_content_factory():
+    """Auditoría de la producción de contenido frente a la demanda real."""
+    ss = st.session_state
+    log, cal, dfq = ss.articulos_log, ss.content_calendar, ss.gsc_queries
+    H = []
+    n = len(log)
+    if n == 0:
+        H.append(_h("alto", "Producción a cero", "No se ha generado ningún artículo desde este panel.",
+                    "Arrancar con las oportunidades reales de Search Console (posición > 8 con muchas "
+                    "impresiones): es demanda comprobada sin contenido."))
+    else:
+        H.append(_h("positivo", "Hay producción", f"{n} artículos generados.",
+                    "Publicarlos y medir su posición a 30/60/90 días."))
+        ia = len([a for a in log if a.get("data")])
+        if ia == 0:
+            H.append(_h("medio", "Todo el contenido sale de plantilla",
+                        f"{n} artículos con la misma plantilla base: riesgo de contenido casi duplicado "
+                        "(thin content) que Google ignora.",
+                        "Reescribir a mano cada pieza antes de publicar; nunca publicar dos artículos con la "
+                        "misma estructura y frases."))
+        origen = {}
+        for a in log:
+            origen[a["origen"]] = origen.get(a["origen"], 0) + 1
+        sector = origen.get("PATRÓN DE SECTOR", 0)
+        if sector > n / 2:
+            H.append(_h("medio", "Se escribe más por intuición que por dato",
+                        f"{sector} de {n} artículos vienen de patrones de sector, no de demanda real medida.",
+                        "Priorizar siempre las propuestas marcadas 'DATO REAL (GSC)' y 'CALENDARIO'."))
+        vert = {}
+        for a in log:
+            vert[a["vertical"]] = vert.get(a["vertical"], 0) + 1
+        if vert.get("CAMPERIZACION", 0) / n > 0.2:
+            H.append(_h("medio", "Demasiado contenido para un servicio no lanzado",
+                        f"{vert['CAMPERIZACION']} de {n} artículos son de camperización ('Próximamente').",
+                        "Un artículo de lista de espera basta; el resto del esfuerzo, a alquiler y venta."))
+        if vert.get("VENTA", 0) == 0 and n >= 3:
+            H.append(_h("bajo", "La venta no tiene contenido",
+                        "Ningún artículo apoya la vertical de venta de campers ex-flota.",
+                        "Una guía 'qué mirar al comprar una camper de ocasión con historial' madura leads de compra."))
+    if dfq is not None and not dfq.empty:
+        d = dfq.copy()
+        d["Vertical"] = d["termino"].apply(clasifica_vertical)
+        op = d[(d["Posicion"] > 8) & (d["Impresiones"] >= 200) & (d["Vertical"] != "MARCA")]
+        cubiertas = set(str(a["keyword"]).lower() for a in log)
+        sin = op[~op["termino"].str.lower().isin(cubiertas)]
+        if len(sin) > 0:
+            ej = sin.sort_values("Impresiones", ascending=False).iloc[0]["termino"]
+            H.append(_h("alto" if len(sin) >= 5 else "medio", "Demanda real sin contenido",
+                        f"{len(sin)} keywords con ≥200 impresiones y posición > 8 no tienen artículo "
+                        f"todavía ({int(sin['Impresiones'].sum()):,} impresiones acumuladas). Ej: '{ej}'.",
+                        "Son las siguientes en la cola: Google ya te asocia a esas búsquedas."))
+        elif len(op) > 0:
+            H.append(_h("positivo", "Oportunidades reales cubiertas",
+                        f"Las {len(op)} oportunidades detectadas en Search Console ya tienen contenido.",
+                        "Medir su evolución."))
+    if cal is not None and not cal.empty:
+        pend = int((cal["Estado"].str.lower() == "pendiente").sum())
+        gen = int((cal["Estado"].str.lower() == "generado").sum())
+        if pend > 0 and gen == 0:
+            H.append(_h("medio", "Calendario que no avanza",
+                        f"{pend} artículos planificados y ninguno generado.",
+                        "Producir al menos uno por semana."))
+        elif pend >= 6 and pend > gen * 3:
+            H.append(_h("bajo", "Backlog editorial grande",
+                        f"{pend} pendientes frente a {gen} generados.",
+                        "Recortar el calendario a lo que realmente se va a producir."))
+    else:
+        H.append(_h("bajo", "Sin calendario editorial", "No hay plan de contenidos conectado.",
+                    "Conectar uno (Google Sheets) para que la producción no dependa de la improvisación."))
+    veredicto = f"{n} artículos generados"
+    if cal is not None and not cal.empty:
+        veredicto += f"; {int((cal['Estado'].str.lower() == 'pendiente').sum())} pendientes en calendario"
+    return _render_auditoria(veredicto + ".", H)
+
+
+def auditar_cruce():
+    """Auditoría del cruce real SEM × SEO: canibalización y oportunidades cruzadas."""
+    ss = st.session_state
+    H = []
+    if ss.ads_perf_terms is None or ss.gsc_queries is None:
+        return _render_auditoria("", [], "Sin gasto real de Ads y consultas reales de Search Console a la "
+                                 "vez, el cruce no puede auditarse con rigor; la matriz de arriba es de demostración.")
+    t = agg_ads_performance(ss.ads_perf_terms, ["Término", "Vertical"])
+    t["k"] = t["Término"].str.lower()
+    g = ss.gsc_queries.copy()
+    g["k"] = g["termino"].str.lower()
+    rc = t.merge(g[["k", "Posicion"]], on="k", how="inner")
+    H.append(_h("bajo", "Solapamiento entre canales",
+                f"{len(rc)} términos con dato real en ambos canales ({len(t)} en Ads, {len(g)} en Search Console).",
+                "Cuanto más solapamiento, más fiable es este cruce."))
+    can = rc[(rc["Posicion"] <= 3) & (rc["ROAS"] < 2) & (rc["Coste"] > 20)]
+    if len(can) > 0:
+        eur = float(can["Coste"].sum())
+        top3 = ", ".join(f"'{x}'" for x in can.sort_values("Coste", ascending=False)["Término"].head(3))
+        H.append(_h("critico" if eur >= 200 else "alto", "Canibalización real",
+                    f"{len(can)} términos en Top 3 orgánico siguen gastando {eur:,.2f} € con ROAS < 2: {top3}.",
+                    "Bajar puja 40-60% y medir 2 semanas: si el tráfico total se mantiene, recortar del todo.",
+                    impacto=eur * 0.5))
+    else:
+        H.append(_h("positivo", "Sin canibalización relevante",
+                    "El gasto en Ads no pisa términos que ya dominas en orgánico.", "Mantener."))
+    # Términos que ya sabes que convierten (en pago) y no tienes en orgánico
+    win = t[(t["ROAS"] >= 3) & (t["Coste"] >= 20)]
+    gk = set(g["k"])
+    win_sin_seo = win[~win["k"].isin(gk)]
+    win_seo_mal = win.merge(g[["k", "Posicion"]], on="k", how="inner")
+    win_seo_mal = win_seo_mal[win_seo_mal["Posicion"] > 10]
+    n_ops = len(win_sin_seo) + len(win_seo_mal)
+    if n_ops > 0:
+        ej = (win_sin_seo.iloc[0]["Término"] if len(win_sin_seo) else win_seo_mal.iloc[0]["Término"])
+        eur_ops = float(win_sin_seo["Coste"].sum() + win_seo_mal["Coste"].sum())
+        H.append(_h("medio", "Sabes qué convierte y no lo tienes en orgánico",
+                    f"{n_ops} términos con ROAS ≥ 3x en Ads no posicionan en Top 10 (o no aparecen) en "
+                    f"Search Console; p.ej. '{ej}'.",
+                    "Crear/optimizar páginas para esos términos: el dato de pago te dice de antemano que convierten.",
+                    impacto=eur_ops))
+    # Marca dominante en orgánico pero sin defensa en pago
+    fuertes = g[(g["Posicion"] <= 3) & (g["Clics"] >= 50)]
+    marca_fuertes = fuertes[fuertes["termino"].apply(clasifica_vertical) == "MARCA"]
+    marca_sem = t[t["Vertical"] == "MARCA"]
+    if len(marca_fuertes) > 0 and marca_sem.empty:
+        H.append(_h("medio", "Marca sin defender en pago",
+                    "Dominas tu marca en orgánico pero no hay gasto de marca en Ads: un competidor puede "
+                    "colarse encima con un anuncio.",
+                    "Campaña de marca con presupuesto mínimo."))
+    if len(can) > 0:
+        veredicto = f"{len(rc)} términos cruzados; {float(can['Coste'].sum()):,.2f} € en riesgo de canibalización."
+    else:
+        veredicto = f"{len(rc)} términos cruzados; sin dinero tirado por canibalización."
+    return _render_auditoria(veredicto, H)
+
+
+_AUDITOR_POR_MODULO = {
+    "recomendaciones_del_agente": lambda ctx: auditar_recomendaciones(st.session_state.get("_recos_actuales", [])),
+    "seo_real_search_console": lambda ctx: auditar_seo_real(),
+    "sem_performance_subastas": lambda ctx: auditar_sem(),
+    "content_factory_seo": lambda ctx: auditar_content_factory(),
+    "auditoria_cruzada_seo_sem": lambda ctx: auditar_cruce(),
+}
+
+
 def render_analisis_experto(modulo_id, titulo_modulo, guia, contexto):
-    """Renderiza, al pie del módulo, el comentario del profesor. No toca
-    nada del contenido existente del módulo: se coloca siempre al final."""
+    """Renderiza, al pie del módulo, el informe del auditor. No toca nada del
+    contenido existente del módulo: se coloca siempre al final. Si hay
+    ANTHROPIC_API_KEY se usa el análisis narrativo de Claude; si no (caso
+    por defecto, sin coste), el motor de auditoría por reglas."""
     st.divider()
     st.markdown(f"##### 🎓 Lo que opina el experto sobre «{titulo_modulo}»")
     contexto_limpio = {k: v for k, v in contexto.items() if v is not None}
@@ -1965,9 +2627,15 @@ def render_analisis_experto(modulo_id, titulo_modulo, guia, contexto):
         if texto:
             st.markdown(texto)
         else:
-            st.caption("🔑 Configura tu `ANTHROPIC_API_KEY` para el análisis crítico completo "
-                      "del experto. De momento, un resumen simple de las cifras:")
-            st.markdown(_resumen_bruto_fallback(contexto_limpio))
+            auditor = _AUDITOR_POR_MODULO.get(modulo_id)
+            try:
+                informe = auditor(contexto_limpio) if auditor else _resumen_bruto_fallback(contexto_limpio)
+            except Exception as e:
+                informe = ("No he podido completar la auditoría de este módulo con los datos actuales "
+                           f"(detalle técnico: {e}).")
+            st.markdown(informe)
+            st.caption("Auditoría generada por el motor de reglas experto (sin coste). Si algún día activas "
+                      "la IA, este bloque pasa a ser un análisis narrativo generado por Claude.")
 
 
 # --- Motor heurístico de recomendaciones SEM/SEO (cruce SEO x SEM sintético) ---
@@ -2476,6 +3144,7 @@ if hemisferio == "🤖 Recomendaciones del Agente":
             for r in recomendaciones if r["sev"] == "alta"
         ][:6],
     }
+    st.session_state["_recos_actuales"] = recomendaciones
     render_analisis_experto(
         "recomendaciones_del_agente", "Recomendaciones del Agente",
         "Este módulo agrega recomendaciones automáticas de SEO y SEM. Evalúa si el "
