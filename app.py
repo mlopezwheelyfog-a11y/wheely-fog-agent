@@ -797,6 +797,19 @@ GSC_SHEET_NAME_CANDIDATES = {
                "GSC Paginas", "GSC Páginas"],
     "fechas": ["GSC_Fechas", "GSC-Fechas", "GSC Fechas"],
 }
+# gid (identificador numérico interno de la pestaña) conocido para las
+# pestañas GSC de la Sheet por defecto. El nombre de una pestaña puede
+# contener un carácter invisible que se ve idéntico pero no coincide byte a
+# byte con lo que se escribe en la URL (nos pasó justo esto con
+# "GSC-Consultas": el nombre visible era correcto y aun así el endpoint de
+# Google devolvía otra pestaña). El gid es inequívoco, así que se prueba
+# SIEMPRE primero cuando se conoce; el nombre queda como alternativa para
+# cuando el usuario conecte una Sheet distinta a la de por defecto.
+GSC_SHEET_GIDS = {
+    "consultas": "653355655",
+    "paginas": "2143890774",
+    "fechas": "818947414",
+}
 
 ADS_PERF_COLMAP = {
     "campaña": ["campaña", "campaign"],
@@ -1127,12 +1140,25 @@ def auto_load_default_sheet():
 
     for tipo, candidatos in GSC_SHEET_NAME_CANDIDATES.items():
         encontrado = False
-        for tab_name in candidatos:
-            df_raw, msg, metodo = _cached_fetch_google_sheet(DEFAULT_GOOGLE_SHEET_URL, tab_name)
+        # Lista de intentos: primero el gid conocido (fiable de verdad), luego
+        # cada nombre candidato como alternativa. Cada intento es una tupla
+        # (etiqueta_para_el_log, tab_name_o_None, gid_o_None).
+        intentos = []
+        gid_conocido = GSC_SHEET_GIDS.get(tipo)
+        if gid_conocido:
+            intentos.append((f"gid={gid_conocido}", None, gid_conocido))
+        intentos += [(nombre, nombre, None) for nombre in candidatos]
+
+        for etiqueta, tab_name, gid in intentos:
+            if gid:
+                url_intento = f"{DEFAULT_GOOGLE_SHEET_URL}#gid={gid}"
+                df_raw, msg, metodo = _cached_fetch_google_sheet(url_intento, None)
+            else:
+                df_raw, msg, metodo = _cached_fetch_google_sheet(DEFAULT_GOOGLE_SHEET_URL, tab_name)
             if df_raw is None:
                 continue
             if _parece_fallback_de_ads(df_raw):
-                continue  # el nombre no existe: Google devolvió otra pestaña (Ads) sin avisar
+                continue  # el nombre/gid no coincide: Google devolvió otra pestaña (Ads) sin avisar
             r = _classify_and_normalize_df(df_raw)
             got = False
             if r["queries"] is not None:
@@ -1142,16 +1168,16 @@ def auto_load_default_sheet():
             if r.get("timeseries") is not None:
                 st.session_state.gsc_ts = r["timeseries"]; got = True
             if r["index_urls"] is not None:
-                issue = r["index_issue"] or tab_name
+                issue = r["index_issue"] or etiqueta
                 st.session_state.gsc_index = [x for x in st.session_state.gsc_index if x[0] != issue]
                 st.session_state.gsc_index.append((issue, r["index_urls"])); got = True
             if got:
-                log.append(("ok", f"'{tab_name}': {r['msg']}"))
+                log.append(("ok", f"GSC ({tipo}) vía {etiqueta}: {r['msg']}"))
                 any_ok = True
                 encontrado = True
                 break
         if not encontrado:
-            log.append(("warn", f"GSC ({tipo}): ninguna pestaña candidata coincidió "
+            log.append(("warn", f"GSC ({tipo}): no encontrado ni por gid ni por nombre "
                                 f"({', '.join(candidatos)})"))
 
     st.session_state.auto_load_log = log
