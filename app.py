@@ -4197,7 +4197,6 @@ def render_advanced_intelligence_suite() -> None:
             st.markdown("#### Trazabilidad de Leads en Tiempo Real (Supabase)")
             df_leads = fetch_grokbot_leads_from_supabase()
             
-            # Filtro interactivo por estado
             estado_seleccionado = st.selectbox(
                 "Filtrar por Estado CRM:", 
                 ["Todos"] + list(df_leads["Estado CRM"].unique())
@@ -4231,7 +4230,6 @@ def render_advanced_intelligence_suite() -> None:
             st.markdown("#### Simulador de Rendimiento: ChatGPT Ads (OpenAI)")
             st.markdown("Ajusta los parámetros globales de inversión para proyectar el impacto en conversiones del Grokbot.")
             
-            # Controles interactivos tipo dashboard profesional
             col_ctrl1, col_ctrl2 = st.columns(2)
             with col_ctrl1:
                 presupuesto_mensual = st.slider("Presupuesto Mensual ChatGPT Ads (€)", min_value=500, max_value=5000, value=1500, step=250)
@@ -4241,7 +4239,7 @@ def render_advanced_intelligence_suite() -> None:
                     ["Equilibrado (Mixto)", "Enfoque Larga Duración / Europa", "Enfoque Local / Escapadas Cortas"]
                 )
             
-            # Datos base simulados del panel de Ads
+            # Datos base simulados corregidos
             base_data = [
                 {
                     "Intención Conversacional": "Ruta camper familiar de larga duración por Europa", 
@@ -4253,11 +4251,10 @@ def render_advanced_intelligence_suite() -> None:
                 },
                 {
                     "Intención Conversacional": "Compra de camper de ocasión ex-flota con historial", 
-                    "Base Impresiones": 920, "Clicks": 105, "CPC Medio (€)": 1.35, "Base Leads": 7, "ROAS Est.": 4.5
+                    "Base Impresiones": 920, "Base Clicks": 105, "CPC Medio (€)": 1.35, "Base Leads": 7, "ROAS Est.": 4.5
                 }
             ]
             
-            # Factor de escala basado en el slider del presupuesto (toma 1500€ como base 1.0)
             factor = presupuesto_mensual / 1500.0
             
             interactive_rows = []
@@ -4280,7 +4277,6 @@ def render_advanced_intelligence_suite() -> None:
                 
             df_gpt_interactive = pd.DataFrame(interactive_rows)
             
-            # Métricas globales de resumen del simulador
             m1, m2, m3 = st.columns(3)
             with m1:
                 st.metric("Inversión Simulada", f"{presupuesto_mensual} €")
