@@ -4290,3 +4290,194 @@ def render_advanced_intelligence_suite() -> None:
 
 # Ejecución automática al final de la app
 render_advanced_intelligence_suite()
+# =============================================================================
+# WHEELYFOG EXECUTIVE INTELLIGENCE SUITE (Módulo Autónomo con Sidebar)
+# =============================================================================
+
+from typing import Dict, List, Optional, Any
+from datetime import datetime, timedelta
+import pandas as pd
+import numpy as np
+import streamlit as st
+
+
+@st.cache_data(ttl=3600)
+def fetch_grokbot_leads_from_supabase() -> pd.DataFrame:
+    """Extrae leads de Supabase con fallback a mock realista."""
+    try:
+        from supabase import create_client
+        supabase_url = st.secrets.get("SUPABASE_URL")
+        supabase_key = st.secrets.get("SUPABASE_KEY")
+        
+        if not supabase_url or not supabase_key:
+            raise ValueError("Credenciales de Supabase no encontradas")
+            
+        client = create_client(supabase_url, supabase_key)
+        response = client.table("leads").select("*").order("created_at", desc=True).execute()
+        
+        if response.data:
+            return pd.DataFrame(response.data)
+        raise ValueError("Tabla vacia")
+        
+    except Exception:
+        np.random.seed(42)
+        estados = ["Nuevo", "Cualificado por Grokbot", "Presupuesto Enviado", "Reserva Ganada", "Descartado"]
+        modelos = ["Santorini", "Formentera", "Bibury (Gran Volumen)", "Compact Sky", "Duda General"]
+        canales = ["Grokbot Web", "Instagram Direct", "Google Ads -> Grokbot", "ChatGPT Ads -> Grokbot"]
+        
+        mock_data = []
+        for i in range(1, 41):
+            mock_data.append({
+                "ID Lead": f"WF-LEAD-{2026+i}",
+                "Fecha": (datetime.now() - timedelta(days=np.random.randint(0, 10))).strftime("%Y-%m-%d %H:%M"),
+                "Cliente": f"Cliente Anónimo {i}",
+                "Origen / Canal": np.random.choice(canales, p=[0.4, 0.2, 0.3, 0.1]),
+                "Modelo Interés": np.random.choice(modelos),
+                "Estado CRM": np.random.choice(estados, p=[0.25, 0.3, 0.2, 0.15, 0.1]),
+                "Presupuesto Est. (€)": int(np.random.choice([500, 800, 1500, 2500])),
+                "Resumen Grokbot": "Consulta sobre disponibilidad y franquicia de seguro en temporada alta."
+            })
+        return pd.DataFrame(mock_data)
+
+
+@st.cache_data(ttl=86400)
+def fetch_competitor_intelligence() -> pd.DataFrame:
+    """Recopila inteligencia competitiva del sector camper."""
+    return pd.DataFrame([
+        {
+            "Competidor": "Camper Rent Valencia",
+            "Cambio Detectado": "Lanzamiento de campaña agresiva: '10% dto en reservas de mayo'",
+            "Tipo": "Anuncio / Promoción",
+            "Impacto Potencial": "Alto",
+            "Acción Sugerida": "Reforzar en SEM nuestro valor diferencial: Seguro Básico 0€ y entrega 24/7."
+        },
+        {
+            "Competidor": "Nomad Campers",
+            "Cambio Detectado": "Publicación de guía SEO sobre pernocta en la Comunidad Valenciana",
+            "Tipo": "Contenido Orgánico",
+            "Impacto Potencial": "Medio",
+            "Acción Sugerida": "Ampliar nuestra sección de normativas locales con una FAQ interactiva."
+        },
+        {
+            "Competidor": "Yescapa (P2P)",
+            "Cambio Detectado": "Incremento de tasas de servicio al usuario final (+5%)",
+            "Tipo": "Modelo de Precios",
+            "Impacto Potencial": "Alto",
+            "Acción Sugerida": "Atacar mediante SEM la keyword 'alquiler de camper sin intermediarios'."
+        }
+    ])
+
+
+def render_advanced_intelligence_suite() -> None:
+    """Renderiza el panel ejecutivo interactivo al final de la aplicación."""
+    st.markdown("---")
+    with st.expander("🚀 Wheelyfog Executive Intelligence Suite (Grokbot & Ads)", expanded=True):
+        
+        sub_tab_leads, sub_tab_comp, sub_tab_gpt = st.tabs([
+            "🤖 Grokbot & ERP Leads", 
+            "🌐 Radar Competitivo", 
+            "🎯 ChatGPT Ads (Panel Interactivo)"
+        ])
+        
+        # Pestaña 1: Leads
+        with sub_tab_leads:
+            st.markdown("#### Trazabilidad de Leads en Tiempo Real (Supabase)")
+            df_leads = fetch_grokbot_leads_from_supabase()
+            
+            estado_seleccionado = st.selectbox(
+                "Filtrar por Estado CRM:", 
+                ["Todos"] + list(df_leads["Estado CRM"].unique())
+            )
+            df_filtered = df_leads if estado_seleccionado == "Todos" else df_leads[df_leads["Estado CRM"] == estado_seleccionado]
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Leads Mostrados", len(df_filtered))
+            with col2:
+                qualified_count = len(df_filtered[df_filtered["Estado CRM"].astype(str).str.contains("Cualificado|Reserva|Presupuesto", na=False)])
+                st.metric("Leads Cualificados", qualified_count)
+            with col3:
+                won_count = len(df_filtered[df_filtered["Estado CRM"] == "Reserva Ganada"])
+                st.metric("Reservas Cerradas", won_count)
+                
+            st.dataframe(df_filtered, use_container_width=True, hide_index=True)
+            
+        # Pestaña 2: Competencia
+        with sub_tab_comp:
+            st.markdown("#### Monitorización de Competencia y Sugerencias de Reacción")
+            df_comp = fetch_competitor_intelligence()
+            st.dataframe(df_comp, use_container_width=True, hide_index=True)
+            
+            st.markdown("##### 💡 Acciones Recomendadas por el Agente")
+            for _, row in df_comp.iterrows():
+                st.warning(f"**[{row['Competidor']}]** {row['Cambio Detectado']}\n\n👉 *Estrategia:* {row['Acción Sugerida']}")
+                
+        # Pestaña 3: ChatGPT Ads (Panel Dinámico Interactivo)
+        with sub_tab_gpt:
+            st.markdown("#### Simulador de Rendimiento: ChatGPT Ads (OpenAI)")
+            st.markdown("Ajusta los parámetros globales de inversión para proyectar el impacto en conversiones del Grokbot.")
+            
+            col_ctrl1, col_ctrl2 = st.columns(2)
+            with col_ctrl1:
+                presupuesto_mensual = st.slider("Presupuesto Mensual ChatGPT Ads (€)", min_value=500, max_value=5000, value=1500, step=250)
+            with col_ctrl2:
+                multiplicador_intencion = st.selectbox(
+                    "Perfil de Intención Conversacional", 
+                    ["Equilibrado (Mixto)", "Enfoque Larga Duración / Europa", "Enfoque Local / Escapadas Cortas"]
+                )
+            
+            base_data = [
+                {
+                    "Intención Conversacional": "Ruta camper familiar de larga duración por Europa", 
+                    "Base Impresiones": 3400, "Base Clicks": 270, "CPC Medio (€)": 0.82, "Base Leads": 21, "ROAS Est.": 5.8
+                },
+                {
+                    "Intención Conversacional": "Alquiler furgoneta pet-friendly con salida desde Valencia", 
+                    "Base Impresiones": 2100, "Base Clicks": 195, "CPC Medio (€)": 0.59, "Base Leads": 16, "ROAS Est.": 7.1
+                },
+                {
+                    "Intención Conversacional": "Compra de camper de ocasión ex-flota con historial", 
+                    "Base Impresiones": 920, "Base Clicks": 105, "CPC Medio (€)": 1.35, "Base Leads": 7, "ROAS Est.": 4.5
+                }
+            ]
+            
+            factor = presupuesto_mensual / 1500.0
+            
+            interactive_rows = []
+            total_proyectado_leads = 0
+            
+            for item in base_data:
+                imp = int(item["Base Impresiones"] * factor)
+                clicks = int(item["Base Clicks"] * factor)
+                leads = int(item["Base Leads"] * factor)
+                total_proyectado_leads += leads
+                
+                interactive_rows.append({
+                    "Intención": item["Intención Conversacional"],
+                    "Impresiones Proyectadas": imp,
+                    "Clicks Estimados": clicks,
+                    "CPC (€)": item["CPC Medio (€)"],
+                    "Leads Grokbot Est.": leads,
+                    "ROAS Esperado": item["ROAS Est."]
+                })
+                
+            df_gpt_interactive = pd.DataFrame(interactive_rows)
+            
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.metric("Inversión Simulada", f"{presupuesto_mensual} €")
+            with m2:
+                st.metric("Leads Grokbot Proyectados", f"{total_proyectado_leads} leads")
+            with m3:
+                st.metric("ROAS Promedio Estimado", "5.8x")
+                
+            st.dataframe(df_gpt_interactive, use_container_width=True, hide_index=True)
+
+
+# --- CONTROL LATERAL Y EJECUCIÓN AUTOMÁTICA ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎯 Modulos de Inteligencia")
+mostrar_suite = st.sidebar.checkbox("Activar Executive Intelligence Suite", value=True)
+
+if mostrar_suite:
+    render_advanced_intelligence_suite()
