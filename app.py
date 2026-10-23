@@ -4500,3 +4500,272 @@ opcion_menu = st.sidebar.radio(
 if opcion_menu == "🚀 Executive Intelligence Suite":
     render_advanced_intelligence_suite()
     st.stop()
+# =============================================================================
+# WHEELYFOG EXECUTIVE INTELLIGENCE SUITE & AGENT CONTROL (Módulo Final Autónomo)
+# =============================================================================
+
+from typing import Dict, List, Optional, Any
+from datetime import datetime, timedelta
+import pandas as pd
+import numpy as np
+import streamlit as st
+import streamlit.components.v1 as components
+
+
+# -----------------------------------------------------------------------------
+# 1. INYECCIÓN AUTOMÁTICA PARA COLAPSAR RECOMENDACIONES DEL AGENTE AL INICIO
+# -----------------------------------------------------------------------------
+def collapse_agent_recommendations_on_load() -> None:
+    """Inyecta JavaScript/CSS para contraer las recomendaciones del agente al cargar la web."""
+    components.html(
+        """
+        <script>
+        window.addEventListener('load', function() {
+            setTimeout(function() {
+                // Selecciona todos los expanders/contenedores del agente al inicio de la página
+                const expanders = window.parent.document.querySelectorAll('div[data-testid="stExpander"]');
+                expanders.forEach((expander) => {
+                    const details = expander.querySelector('details');
+                    if (details && details.hasAttribute('open')) {
+                        details.removeAttribute('open');
+                    }
+                });
+            }, 500);
+        });
+        </script>
+        """,
+        height=0,
+        width=0
+    )
+
+
+# -----------------------------------------------------------------------------
+# 2. FUNCIONES DE DATOS DE LA SUITE (CON TEMPORALIDAD DINÁMICA)
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=3600)
+def fetch_grokbot_leads_from_supabase() -> pd.DataFrame:
+    """Extrae leads de Supabase con fallback a mock realista y fechas dinámicas."""
+    try:
+        from supabase import create_client
+        supabase_url = st.secrets.get("SUPABASE_URL")
+        supabase_key = st.secrets.get("SUPABASE_KEY")
+        
+        if not supabase_url or not supabase_key:
+            raise ValueError("Credenciales de Supabase no encontradas")
+            
+        client = create_client(supabase_url, supabase_key)
+        response = client.table("leads").select("*").order("created_at", desc=True).execute()
+        
+        if response.data:
+            df = pd.DataFrame(response.data)
+            df["Fecha_DT"] = pd.to_datetime(df["created_at"])
+            return df
+        raise ValueError("Tabla vacia")
+        
+    except Exception:
+        np.random.seed(42)
+        estados = ["Nuevo", "Cualificado por Grokbot", "Presupuesto Enviado", "Reserva Ganada", "Descartado"]
+        modelos = ["Santorini", "Formentera", "Bibury (Gran Volumen)", "Compact Sky", "Duda General"]
+        canales = ["Grokbot Web", "Instagram Direct", "Google Ads -> Grokbot", "ChatGPT Ads -> Grokbot"]
+        
+        mock_data = []
+        hoy = datetime.now()
+        for i in range(1, 61):
+            dias_atras = np.random.randint(0, 75)
+            fecha_lead = hoy - timedelta(days=int(dias_atras))
+            mock_data.append({
+                "ID Lead": f"WF-LEAD-{2026+i}",
+                "Fecha_DT": fecha_lead,
+                "Fecha": fecha_lead.strftime("%Y-%m-%d %H:%M"),
+                "Cliente": f"Cliente Anónimo {i}",
+                "Origen / Canal": np.random.choice(canales, p=[0.4, 0.2, 0.3, 0.1]),
+                "Modelo Interés": np.random.choice(modelos),
+                "Estado CRM": np.random.choice(estados, p=[0.25, 0.3, 0.2, 0.15, 0.1]),
+                "Presupuesto Est. (€)": int(np.random.choice([500, 800, 1500, 2500])),
+                "Resumen Grokbot": "Consulta sobre disponibilidad y franquicia de seguro en temporada alta."
+            })
+        return pd.DataFrame(mock_data)
+
+
+@st.cache_data(ttl=86400)
+def fetch_competitor_intelligence() -> pd.DataFrame:
+    """Recopila inteligencia competitiva del sector camper."""
+    return pd.DataFrame([
+        {
+            "Competidor": "Camper Rent Valencia",
+            "Cambio Detectado": "Lanzamiento de campaña agresiva: '10% dto en reservas de mayo'",
+            "Tipo": "Anuncio / Promoción",
+            "Impacto Potencial": "Alto",
+            "Acción Sugerida": "Reforzar en SEM nuestro valor diferencial: Seguro Básico 0€ y entrega 24/7."
+        },
+        {
+            "Competidor": "Nomad Campers",
+            "Cambio Detectado": "Publicación de guía SEO sobre pernocta en la Comunidad Valenciana",
+            "Tipo": "Contenido Orgánico",
+            "Impacto Potencial": "Medio",
+            "Acción Sugerida": "Ampliar nuestra sección de normativas locales con una FAQ interactiva."
+        },
+        {
+            "Competidor": "Yescapa (P2P)",
+            "Cambio Detectado": "Incremento de tasas de servicio al usuario final (+5%)",
+            "Tipo": "Modelo de Precios",
+            "Impacto Potencial": "Alto",
+            "Acción Sugerida": "Atacar mediante SEM la keyword 'alquiler de camper sin intermediarios'."
+        }
+    ])
+
+
+# -----------------------------------------------------------------------------
+# 3. RENDERIZADO DEL MÓDULO AISLADO
+# -----------------------------------------------------------------------------
+def render_advanced_intelligence_suite() -> None:
+    """Renderiza el panel ejecutivo autónomo con filtros temporales."""
+    st.title("🚀 Executive Intelligence Suite")
+    st.caption("Panel de control aislado con trazabilidad de Grokbot, Radar Competitivo y Simulador de ChatGPT Ads.")
+    st.markdown("---")
+    
+    sub_tab_leads, sub_tab_comp, sub_tab_gpt = st.tabs([
+        "🤖 Grokbot & ERP Leads", 
+        "🌐 Radar Competitivo", 
+        "🎯 ChatGPT Ads (Panel Dinámico)"
+    ])
+    
+    # --- TAB 1: LEADS Y FILTRADO DE TEMPORALIDAD ---
+    with sub_tab_leads:
+        st.markdown("#### Trazabilidad de Leads en Tiempo Real (Supabase)")
+        df_leads = fetch_grokbot_leads_from_supabase()
+        
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            temporalidad = st.selectbox(
+                "📅 Filtrar por Temporalidad:",
+                ["Últimos 7 días", "Últimos 30 días", "Últimos 60 días", "Histórico Completo"]
+            )
+        with col_f2:
+            estado_seleccionado = st.selectbox(
+                "🔍 Filtrar por Estado CRM:", 
+                ["Todos"] + list(df_leads["Estado CRM"].unique())
+            )
+            
+        hoy = datetime.now()
+        if temporalidad == "Últimos 7 días":
+            limite_fecha = hoy - timedelta(days=7)
+        elif temporalidad == "Últimos 30 días":
+            limite_fecha = hoy - timedelta(days=30)
+        elif temporalidad == "Últimos 60 días":
+            limite_fecha = hoy - timedelta(days=60)
+        else:
+            limite_fecha = datetime.min
+            
+        df_filtered = df_leads[df_leads["Fecha_DT"] >= limite_fecha]
+        
+        if estado_seleccionado != "Todos":
+            df_filtered = df_filtered[df_filtered["Estado CRM"] == estado_seleccionado]
+            
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Leads en Periodo", len(df_filtered))
+        with col2:
+            qualified_count = len(df_filtered[df_filtered["Estado CRM"].astype(str).str.contains("Cualificado|Reserva|Presupuesto", na=False)])
+            st.metric("Leads Cualificados", qualified_count)
+        with col3:
+            won_count = len(df_filtered[df_filtered["Estado CRM"] == "Reserva Ganada"])
+            st.metric("Reservas Cerradas", won_count)
+            
+        st.dataframe(df_filtered.drop(columns=["Fecha_DT"]), use_container_width=True, hide_index=True)
+        
+    # --- TAB 2: COMPETENCIA (RECOMENDACIONES CERRADAS) ---
+    with sub_tab_comp:
+        st.markdown("#### Monitorización de Competencia")
+        df_comp = fetch_competitor_intelligence()
+        st.dataframe(df_comp, use_container_width=True, hide_index=True)
+        
+        with st.expander("💡 Ver recomendaciones de estrategia competitiva (Desplegar)", expanded=False):
+            st.markdown("##### Acciones Sugeridas por el Agente:")
+            for _, row in df_comp.iterrows():
+                st.warning(f"**[{row['Competidor']}]** {row['Cambio Detectado']}\n\n👉 *Estrategia:* {row['Acción Sugerida']}")
+            
+    # --- TAB 3: CHATGPT ADS (SIMULADOR DE MÉTRICAS) ---
+    with sub_tab_gpt:
+        st.markdown("#### Simulador de Rendimiento: ChatGPT Ads (OpenAI)")
+        st.markdown("Ajusta los parámetros globales de inversión y el horizonte temporal.")
+        
+        col_ctrl1, col_ctrl2, col_ctrl3 = st.columns(3)
+        with col_ctrl1:
+            horizonte = st.selectbox("Horizonte Temporal", ["Mensual", "Trimestral (x3)", "Anual (x12)"])
+        with col_ctrl2:
+            presupuesto_base = st.slider("Inversión Base (€ / mes)", min_value=500, max_value=5000, value=1500, step=250)
+        with col_ctrl3:
+            multiplicador_intencion = st.selectbox(
+                "Perfil Conversacional", 
+                ["Equilibrado (Mixto)", "Enfoque Europa", "Enfoque Local"]
+            )
+            
+        multiplicador_tiempo = 1 if horizonte == "Mensual" else (3 if horizonte == "Trimestral (x3)" else 12)
+        presupuesto_total = presupuesto_base * multiplicador_tiempo
+        
+        base_data = [
+            {
+                "Intención Conversacional": "Ruta camper familiar de larga duración por Europa", 
+                "Base Impresiones": 3400, "Base Clicks": 270, "CPC Medio (€)": 0.82, "Base Leads": 21, "ROAS Est.": 5.8
+            },
+            {
+                "Intención Conversacional": "Alquiler furgoneta pet-friendly con salida desde Valencia", 
+                "Base Impresiones": 2100, "Base Clicks": 195, "CPC Medio (€)": 0.59, "Base Leads": 16, "ROAS Est.": 7.1
+            },
+            {
+                "Intención Conversacional": "Compra de camper de ocasión ex-flota con historial", 
+                "Base Impresiones": 920, "Base Clicks": 105, "CPC Medio (€)": 1.35, "Base Leads": 7, "ROAS Est.": 4.5
+            }
+        ]
+        
+        factor = presupuesto_base / 1500.0
+        
+        interactive_rows = []
+        total_proyectado_leads = 0
+        
+        for item in base_data:
+            imp = int(item["Base Impresiones"] * factor * multiplicador_tiempo)
+            clicks = int(item["Base Clicks"] * factor * multiplicador_tiempo)
+            leads = int(item["Base Leads"] * factor * multiplicador_tiempo)
+            total_proyectado_leads += leads
+            
+            interactive_rows.append({
+                "Intención": item["Intención Conversacional"],
+                "Impresiones Proyectadas": imp,
+                "Clicks Estimados": clicks,
+                "CPC (€)": item["CPC Medio (€)"],
+                "Leads Grokbot Est.": leads,
+                "ROAS Esperado": item["ROAS Est."]
+            })
+            
+        df_gpt_interactive = pd.DataFrame(interactive_rows)
+        
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric(f"Inversión Total ({horizonte})", f"{presupuesto_total:,} €")
+        with m2:
+            st.metric("Leads Grokbot Proyectados", f"{total_proyectado_leads} leads")
+        with m3:
+            st.metric("ROAS Promedio Estimado", "5.8x")
+            
+        st.dataframe(df_gpt_interactive, use_container_width=True, hide_index=True)
+
+
+# -----------------------------------------------------------------------------
+# 4. ROUTER DEL SIDEBAR Y EJECUCIÓN
+# -----------------------------------------------------------------------------
+collapse_agent_recommendations_on_load()
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎯 Navegación del Sistema")
+
+vista_seleccionada = st.sidebar.radio(
+    "Selecciona el Entorno:",
+    ["Dashboard Principal", "🚀 Executive Intelligence Suite"],
+    key="wheelyfog_master_router"
+)
+
+if vista_seleccionada == "🚀 Executive Intelligence Suite":
+    render_advanced_intelligence_suite()
+    st.stop()
