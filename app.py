@@ -2955,53 +2955,107 @@ def wf_suite_render_competitive_radar() -> None:
 
 
 def wf_suite_render_ads_simulator() -> None:
-    st.subheader("ChatGPT Ads · Simulador de rendimiento")
-    st.caption("Modelo orientativo, no una previsión garantizada ni datos de una plataforma publicitaria conectada.")
+    st.subheader("ChatGPT Ads · Simulador basado en evidencia")
+    st.caption(
+        "El modelo separa datos reales, benchmarks propios y supuestos. No es una previsión oficial de ChatGPT Ads "
+        "ni presupone que el inventario publicitario esté disponible para tu cuenta."
+    )
+
+    evidence_mode = st.radio(
+        "¿En qué datos quieres basar el escenario?",
+        [
+            "Datos históricos de Wheely Fog",
+            "Benchmark manual de campañas comparables",
+            "Escenario exploratorio sin datos propios",
+        ],
+        key="wf_suite_ads_evidence_mode",
+        horizontal=True,
+    )
+    if evidence_mode == "Datos históricos de Wheely Fog":
+        st.info("Introduce resultados agregados de una campaña comparable. Usa el mismo mercado, objetivo y tipo de conversión siempre que sea posible.")
+        a, b, c = st.columns(3)
+        hist_spend = a.number_input("Gasto histórico (€)", min_value=0.0, value=1500.0, step=100.0, key="wf_ads_hist_spend")
+        hist_clicks = b.number_input("Clics históricos", min_value=0, value=1000, step=50, key="wf_ads_hist_clicks")
+        hist_impressions = c.number_input("Impresiones históricas", min_value=0, value=40000, step=1000, key="wf_ads_hist_impressions")
+        d, e, f = st.columns(3)
+        hist_leads = d.number_input("Leads históricos", min_value=0, value=50, step=5, key="wf_ads_hist_leads")
+        hist_bookings = e.number_input("Reservas atribuidas", min_value=0, value=8, step=1, key="wf_ads_hist_bookings")
+        hist_revenue = f.number_input("Ingresos atribuidos (€)", min_value=0.0, value=5200.0, step=250.0, key="wf_ads_hist_revenue")
+        if hist_spend > 0 and hist_clicks > 0:
+            base_cpc = hist_spend / hist_clicks
+        else:
+            base_cpc = 1.2
+        base_ctr = hist_clicks / hist_impressions * 100 if hist_impressions else 2.5
+        base_lead_rate = hist_leads / hist_clicks * 100 if hist_clicks else 5.0
+        base_close_rate = hist_bookings / hist_leads * 100 if hist_leads else 15.0
+        base_revenue = hist_revenue / hist_bookings if hist_bookings else 650.0
+        if hist_spend > 0:
+            st.caption(f"Base calculada: CPC {base_cpc:.2f} € · CTR {base_ctr:.2f}% · clic→lead {base_lead_rate:.2f}% · lead→reserva {base_close_rate:.2f}% · ROAS histórico {hist_revenue / hist_spend:.2f}x")
+        evidence_label = "Derivado de los datos históricos introducidos"
+    elif evidence_mode == "Benchmark manual de campañas comparables":
+        st.info("Usa medianas de campañas propias o benchmarks fiables para el mismo país, objetivo y canal. No introduzcas métricas de competidores que no puedas verificar.")
+        a, b, c = st.columns(3)
+        base_cpc = a.number_input("CPC benchmark (€)", min_value=0.05, value=1.20, step=0.10, key="wf_ads_bench_cpc")
+        base_ctr = b.number_input("CTR benchmark (%)", min_value=0.05, value=2.5, step=0.1, key="wf_ads_bench_ctr")
+        base_lead_rate = c.number_input("Clic → lead benchmark (%)", min_value=0.1, value=5.0, step=0.5, key="wf_ads_bench_lead")
+        d, e = st.columns(2)
+        base_close_rate = d.number_input("Lead → reserva (%)", min_value=0.1, value=15.0, step=1.0, key="wf_ads_bench_close")
+        base_revenue = e.number_input("Ingreso medio por reserva (€)", min_value=0.0, value=650.0, step=50.0, key="wf_ads_bench_revenue")
+        evidence_label = "Benchmark introducido manualmente; verificar comparabilidad"
+    else:
+        st.warning("Sin datos propios, los números siguientes son únicamente un escenario exploratorio. No deben presentarse como predicción ni usarse como presupuesto aprobado.")
+        a, b, c = st.columns(3)
+        base_cpc = a.number_input("CPC supuesto (€)", min_value=0.05, value=1.20, step=0.10, key="wf_ads_explore_cpc")
+        base_ctr = b.number_input("CTR supuesto (%)", min_value=0.05, value=2.5, step=0.1, key="wf_ads_explore_ctr")
+        base_lead_rate = c.number_input("Clic → lead supuesto (%)", min_value=0.1, value=5.0, step=0.5, key="wf_ads_explore_lead")
+        d, e = st.columns(2)
+        base_close_rate = d.number_input("Lead → reserva supuesto (%)", min_value=0.1, value=15.0, step=1.0, key="wf_ads_explore_close")
+        base_revenue = e.number_input("Ingreso medio supuesto (€)", min_value=0.0, value=650.0, step=50.0, key="wf_ads_explore_revenue")
+        evidence_label = "Supuestos sin validación histórica"
+
+    st.divider()
     col1, col2 = st.columns([2, 1])
     with col1:
-        monthly_budget = st.slider(
-            "Inversión base mensual (€)",
-            min_value=100,
-            max_value=20000,
-            value=1500,
-            step=100,
-            key="wf_suite_ads_budget_slider",
-        )
+        monthly_budget = st.slider("Inversión mensual propuesta (€)", min_value=100, max_value=20000, value=1500, step=100, key="wf_suite_ads_budget_slider")
     with col2:
-        horizon = st.selectbox(
-            "Horizonte temporal",
-            ["Mensual", "Trimestral x3", "Anual x12"],
-            key="wf_suite_ads_horizon",
-        )
+        horizon = st.selectbox("Horizonte temporal", ["Mensual", "Trimestral x3", "Anual x12"], key="wf_suite_ads_horizon")
     multiplier = {"Mensual": 1, "Trimestral x3": 3, "Anual x12": 12}[horizon]
     spend = float(monthly_budget * multiplier)
 
-    cpc = st.slider("CPC supuesto (€)", min_value=0.20, max_value=5.00, value=1.20, step=0.10, key="wf_suite_ads_cpc")
-    ctr_pct = st.slider("CTR supuesto (%)", min_value=0.2, max_value=8.0, value=2.5, step=0.1, key="wf_suite_ads_ctr")
-    lead_rate_pct = st.slider("Conversión clic → lead (%)", min_value=0.5, max_value=20.0, value=5.0, step=0.5, key="wf_suite_ads_lead_rate")
-    close_rate_pct = st.slider("Conversión lead → reserva (%)", min_value=1.0, max_value=60.0, value=15.0, step=1.0, key="wf_suite_ads_close_rate")
-    revenue_per_booking = st.slider("Ingreso medio por reserva (€)", min_value=100, max_value=3000, value=650, step=50, key="wf_suite_ads_revenue")
-
-    clicks = int(spend / cpc) if cpc > 0 else 0
-    impressions = int(clicks / (ctr_pct / 100.0)) if ctr_pct > 0 else 0
-    leads = int(clicks * (lead_rate_pct / 100.0))
-    bookings = leads * (close_rate_pct / 100.0)
-    projected_revenue = bookings * revenue_per_booking
-    roas = projected_revenue / spend if spend > 0 else 0.0
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Inversión proyectada", f"{spend:,.0f} €")
-    c2.metric("Impresiones", f"{impressions:,.0f}")
-    c3.metric("Clics / leads", f"{clicks:,.0f} / {leads:,.0f}")
-    c4.metric("ROAS estimado", f"{roas:.2f}x")
-    st.write({
-        "Horizonte": horizon,
-        "Reservas estimadas (modelo)": round(bookings, 1),
-        "Ingresos proyectados": f"{projected_revenue:,.0f} €",
-        "Coste por lead estimado": f"{(spend / leads):,.2f} €" if leads else "N/D",
-        "Supuesto": "Impresiones = clics / CTR; clics = inversión / CPC; ROAS = ingresos atribuidos / inversión.",
-    })
-    st.warning("Todas las métricas dependen de los supuestos configurados. No representan resultados históricos ni garantizan rendimiento futuro.")
-
+    # Tres escenarios transparentes: sensibilidad de ±20% en costes/tasas.
+    # No son intervalos estadísticos ni probabilidades.
+    scenarios = [
+        ("Conservador", max(base_cpc * 1.20, 0.01), max(base_ctr * 0.80, 0.01), max(base_lead_rate * 0.80, 0.01), max(base_close_rate * 0.80, 0.01), 0.80),
+        ("Base", max(base_cpc, 0.01), max(base_ctr, 0.01), max(base_lead_rate, 0.01), max(base_close_rate, 0.01), 1.00),
+        ("Favorable", max(base_cpc * 0.80, 0.01), max(base_ctr * 1.20, 0.01), max(base_lead_rate * 1.20, 0.01), max(base_close_rate * 1.20, 0.01), 1.00),
+    ]
+    results = []
+    for name, cpc, ctr, lead_rate, close_rate, revenue_factor in scenarios:
+        clicks = int(spend / cpc)
+        impressions = int(clicks / (ctr / 100.0))
+        leads = int(clicks * lead_rate / 100.0)
+        bookings = leads * close_rate / 100.0
+        revenue = bookings * base_revenue * revenue_factor
+        results.append({
+            "Escenario": name,
+            "CPC (€)": round(cpc, 2),
+            "CTR (%)": round(ctr, 2),
+            "Impresiones estimadas": impressions,
+            "Clics estimados": clicks,
+            "Leads estimados": leads,
+            "Reservas estimadas": round(bookings, 1),
+            "Ingresos estimados (€)": round(revenue, 0),
+            "CPA reserva (€)": round(spend / bookings, 2) if bookings else None,
+            "ROAS estimado": round(revenue / spend, 2) if spend else 0,
+        })
+    st.markdown("#### Resultado por escenario")
+    st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
+    st.caption(f"Base del cálculo: {evidence_label}. Horizonte: {horizon}. Presupuesto acumulado: {spend:,.0f} €.")
+    st.markdown("**Cómo se calcula:** clics = inversión / CPC; impresiones = clics / CTR; leads = clics × conversión a lead; reservas = leads × conversión a reserva; ROAS = ingresos atribuidos / inversión.")
+    st.warning(
+        "El ±20% es una prueba de sensibilidad configurable en el código, no un intervalo de confianza ni un benchmark de OpenAI. "
+        "El modelo no confirma disponibilidad, precios ni rendimiento de ChatGPT Ads. Antes de decidir, sustituye los supuestos por datos medidos y valida el objetivo de atribución."
+    )
 
 
 # ==========================================
@@ -3187,6 +3241,12 @@ def wf_suite_render_meta_competitor_radar() -> None:
             offer = st.text_input("Oferta o mensaje principal", placeholder="Ej.: escapada, precio, libertad, facilidad")
             cta = st.text_input("Llamada a la acción", placeholder="Ej.: Reserva ahora / descubre rutas")
         notes = st.text_area("Notas de la creatividad", placeholder="Qué aparece en los primeros segundos, escenas, duración aproximada, estilo, público aparente…")
+        with st.expander("Métricas observables (opcionales)", expanded=False):
+            st.caption("Meta no publica normalmente CTR, retención ni conversiones de anuncios comerciales de competidores. Rellena solo métricas verificables que tengas por una fuente legítima; no inventes cifras.")
+            m1, m2, m3 = st.columns(3)
+            observed_days = m1.number_input("Días activo observados", min_value=0, max_value=5000, value=0, step=1, key="wf_meta_observed_days")
+            duration_seconds = m2.number_input("Duración del vídeo (s)", min_value=0, max_value=3600, value=0, step=1, key="wf_meta_duration")
+            observed_views = m3.number_input("Reproducciones visibles (si aparecen)", min_value=0, value=0, step=100, key="wf_meta_observed_views")
         submitted = st.form_submit_button("➕ Guardar anuncio en el radar", type="primary", use_container_width=True)
         if submitted:
             if not ad_url.strip() and not hook.strip() and not notes.strip():
@@ -3199,6 +3259,9 @@ def wf_suite_render_meta_competitor_radar() -> None:
                     "Mensaje / oferta": offer.strip(),
                     "CTA": cta.strip(),
                     "Notas": notes.strip(),
+                    "Días activo observados": int(observed_days),
+                    "Duración vídeo (s)": int(duration_seconds),
+                    "Reproducciones visibles": int(observed_views),
                     "URL anuncio": ad_url.strip(),
                     "Fecha de registro": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 })
@@ -3230,8 +3293,57 @@ def wf_suite_render_meta_competitor_radar() -> None:
         st.info("Todavía no has guardado anuncios. Abre la Biblioteca de Meta, revisa las creatividades y registra aquí las que quieras comparar.")
 
     st.divider()
-    st.markdown("#### 3. Ideas de vídeo para probar en Wheely Fog")
-    st.caption("Estas son hipótesis creativas iniciales; no se presentan como conclusiones verificadas sobre la competencia.")
+    st.markdown("#### 3. Análisis de patrones y sugerencias basadas en lo registrado")
+    st.caption(
+        "Sin API, el panel no puede conocer la retención, CTR, CPA ni ROAS privados de competidores. "
+        "Las recomendaciones de esta sección se apoyan en los campos que registres y separan observaciones de hipótesis."
+    )
+    if rows:
+        df_patterns = pd.DataFrame(rows)
+        if "Formato" in df_patterns:
+            st.markdown("**Mix de formatos registrados**")
+            st.dataframe(
+                df_patterns.groupby("Formato", dropna=False).size().reset_index(name="Anuncios registrados"),
+                use_container_width=True,
+                hide_index=True,
+            )
+        if "Días activo observados" in df_patterns:
+            days_data = pd.to_numeric(df_patterns["Días activo observados"], errors="coerce").fillna(0)
+            if (days_data > 0).any():
+                st.markdown("**Anuncios con mayor tiempo activo observado**")
+                ranked = df_patterns.assign(_dias=days_data).sort_values("_dias", ascending=False)
+                st.dataframe(
+                    ranked[["Competidor", "Formato", "Gancho", "Mensaje / oferta", "Días activo observados", "URL anuncio"]].head(10),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={"URL anuncio": st.column_config.LinkColumn("Abrir anuncio", display_text="Ver anuncio")},
+                )
+                st.caption("Más días activo puede sugerir que el anunciante mantiene la creatividad, pero no demuestra que tenga mejor rendimiento.")
+        theme_text = " ".join(
+            str(row.get(field, "")) for row in rows
+            for field in ["Gancho", "Mensaje / oferta", "CTA", "Notas"]
+        ).lower()
+        evidence_suggestions = []
+        if any(term in theme_text for term in ["precio", "€", "oferta", "descuento", "incluye"]):
+            evidence_suggestions.append(("Patrón observado: precio/oferta", "Test A/B: una creatividad con precio y elementos incluidos frente a otra centrada en experiencia. Hipótesis: la transparencia puede filtrar mejor la intención; medir reservas y CPA, no solo CTR."))
+        if any(term in theme_text for term in ["ruta", "paisaje", "montaña", "mar", "viaje", "aventura"]):
+            evidence_suggestions.append(("Patrón observado: destino/experiencia", "Test A/B: abrir con el paisaje/destino frente a abrir con el interior de la camper. Mantén igual oferta y CTA para aislar el efecto del gancho."))
+        if any(term in theme_text for term in ["cliente", "ugc", "testimonio", "opinión", "experiencia"]):
+            evidence_suggestions.append(("Patrón observado: prueba social", "Test A/B: testimonio real autorizado frente a vídeo de marca. Compara retención a 3 s, porcentaje de vídeo visto, CTR saliente y coste por reserva."))
+        if any(term in theme_text for term in ["reserva", "disponibilidad", "fácil", "recogida", "seguro", "kilómetro"]):
+            evidence_suggestions.append(("Patrón observado: reducir fricción", "Test A/B: explicar recogida/equipamiento/condiciones al inicio frente a mostrar primero el viaje. Mide el avance a disponibilidad y reservas."))
+        if evidence_suggestions:
+            for title, suggestion in evidence_suggestions:
+                with st.expander(title, expanded=False):
+                    st.write(suggestion)
+        else:
+            st.info("Cuando guardes varios anuncios y describas sus ganchos, ofertas y escenas, aparecerán sugerencias vinculadas a los patrones observados. Por ahora no hay suficiente información registrada para atribuir patrones.")
+    else:
+        st.info("Registra primero varios anuncios de la competencia para generar sugerencias relacionadas con las observaciones. No se fabricarán métricas de rendimiento.")
+
+    st.divider()
+    st.markdown("#### 4. Ideas de vídeo para probar en Wheely Fog")
+    st.caption("Estas son hipótesis de test. Prioriza primero las que coincidan con patrones que hayas registrado y valida con un experimento A/B propio.")
     video_ideas = [
         ("Hook visual + ruta real", "12–18 s en vertical: paisaje potente en el primer segundo, tres escenas del viaje, camper en contexto y CTA para consultar fechas.", "Medir retención inicial y visitas a la página de reserva."),
         ("Escapada concreta de 48 horas", "Mostrar salida, parada, noche y desayuno con una ruta realista y una propuesta concreta para pareja o amigos.", "Medir clics cualificados y coste por reserva."),
@@ -3246,9 +3358,10 @@ def wf_suite_render_meta_competitor_radar() -> None:
             st.caption(f"Qué medir: {metric}")
 
     st.warning(
-        "Importante: la Biblioteca de anuncios permite inspeccionar creatividades públicas, pero no ofrece de forma general "
-        "el CTR, las conversiones, el CPA o el ROAS de anuncios comerciales de competidores. Guarda tus propios resultados "
-        "de campaña para saber qué concepto funciona realmente. Los registros se mantienen en la sesión de Streamlit; descarga el CSV para conservarlos."
+        "Importante: la Biblioteca pública no permite determinar qué anuncio competidor tiene mejor retención, CTR, CPA o ROAS. "
+        "La antigüedad activa y las reproducciones visibles son señales incompletas, no una clasificación de rendimiento. "
+        "Para conclusiones válidas, mide retención a 3 s, porcentaje de vídeo visto, CTR saliente, coste por lead y CPA de reserva en tus propias campañas. "
+        "Los registros se mantienen en la sesión de Streamlit; descarga el CSV para conservarlos."
     )
 
 
