@@ -3003,292 +3003,558 @@ def wf_suite_render_ads_simulator() -> None:
     st.warning("Todas las métricas dependen de los supuestos configurados. No representan resultados históricos ni garantizan rendimiento futuro.")
 
 
+
+# ==========================================
+# EXECUTIVE INTELLIGENCE · META ADS COMPETITOR RADAR
+# ==========================================
+WF_META_COMPETITORS = {
+    "Roadsurfer": "META_PAGE_ID_ROADSURFER",
+    "Indie Campers": "META_PAGE_ID_INDIECAMPERS",
+    "Walabi Campers": "META_PAGE_ID_WALABICAMPERS",
+}
+WF_META_LIBRARY_URL = "https://www.facebook.com/ads/library/"
+
+
+def _wf_meta_secret(name: str, default: str = "") -> str:
+    """Lee un secreto de Streamlit o variable de entorno sin interrumpir la app."""
+    value = os.environ.get(name, "")
+    if value:
+        return str(value).strip()
+    try:
+        value = st.secrets.get(name, default)
+    except Exception:
+        value = default
+    return str(value or default).strip()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _wf_meta_fetch_competitor_ads(
+    brand: str,
+    page_id: str,
+    access_token: str,
+    api_version: str,
+    media_type: str,
+) -> tuple[list[dict], str]:
+    """Consulta la API oficial de Meta Ad Library para anuncios entregados en España/UE.
+
+    El token se configura mediante META_AD_LIBRARY_ACCESS_TOKEN en secretos o entorno.
+    La caché dura una hora; no se guardan los datos en una base externa.
+    """
+    if not access_token:
+        return [], "Falta META_AD_LIBRARY_ACCESS_TOKEN."
+
+    fields = ",".join([
+        "id", "page_id", "page_name", "ad_creation_time",
+        "ad_delivery_start_time", "ad_delivery_stop_time",
+        "ad_creative_bodies", "ad_creative_link_titles",
+        "ad_creative_link_descriptions", "publisher_platforms",
+        "ad_snapshot_url", "eu_total_reach",
+    ])
+    params: dict[str, object] = {
+        "access_token": access_token,
+        "ad_reached_countries": '["ES"]',
+        "ad_active_status": "ACTIVE",
+        "ad_type": "ALL",
+        "fields": fields,
+        "limit": 100,
+    }
+    if media_type in ("VIDEO", "IMAGE"):
+        params["media_type"] = media_type
+    if page_id:
+        params["search_page_ids"] = json.dumps([page_id])
+    else:
+        params["search_terms"] = brand
+
+    url = f"https://graph.facebook.com/{api_version}/ads_archive"
+    records: list[dict] = []
+    try:
+        for _ in range(3):
+            response = requests.get(url, params=params, timeout=25)
+            payload = response.json()
+            if response.status_code >= 400 or payload.get("error"):
+                error = payload.get("error", {})
+                message = error.get("message", response.text[:400]) if isinstance(error, dict) else str(error)
+                return records, f"Meta API: {message}"
+            records.extend(payload.get("data", []))
+            cursor = (payload.get("paging", {}).get("cursors", {}) or {}).get("after")
+            if not cursor or len(payload.get("data", [])) == 0:
+                break
+            params["after"] = cursor
+        return records, f"Consulta completada: {len(records)} anuncios encontrados."
+    except requests.RequestException as exc:
+        return records, f"No se pudo conectar con Meta: {exc.__class__.__name__}."
+    except (ValueError, TypeError) as exc:
+        return records, f"Respuesta no válida de Meta: {exc.__class__.__name__}."
+
+
+def _wf_meta_list_text(value: object) -> str:
+    if isinstance(value, list):
+        return " · ".join(str(item).strip() for item in value if str(item).strip())
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _wf_meta_normalize_ads(records: list[dict], brand: str, media_type: str) -> pd.DataFrame:
+    """Normaliza campos disponibles y calcula duración activa, no rendimiento real."""
+    rows: list[dict] = []
+    now = pd.Timestamp.now(tz="UTC")
+    for ad in records:
+        start_raw = ad.get("ad_delivery_start_time") or ad.get("ad_creation_time")
+        stop_raw = ad.get("ad_delivery_stop_time")
+        start = pd.to_datetime(start_raw, errors="coerce", utc=True)
+        stop = pd.to_datetime(stop_raw, errors="coerce", utc=True)
+        active_days = max(0, int((now - start).days)) if pd.notna(start) else None
+        reach_raw = ad.get("eu_total_reach")
+        try:
+            reach = int(reach_raw) if reach_raw is not None else None
+        except (TypeError, ValueError):
+            reach = None
+        rows.append({
+            "Competidor buscado": brand,
+            "Página anunciante": str(ad.get("page_name") or "No disponible"),
+            "ID anuncio": str(ad.get("id") or ""),
+            "Inicio": start.strftime("%Y-%m-%d") if pd.notna(start) else "",
+            "Fin": stop.strftime("%Y-%m-%d") if pd.notna(stop) else "Activo / no indicado",
+            "Días desde inicio": active_days,
+            "Alcance estimado UE": reach,
+            "Formato solicitado": {"VIDEO": "Vídeo (filtro solicitado)", "IMAGE": "Imagen (filtro solicitado)", "ALL": "Todos / no especificado"}.get(media_type, media_type),
+            "Texto": _wf_meta_list_text(ad.get("ad_creative_bodies")),
+            "Titular": _wf_meta_list_text(ad.get("ad_creative_link_titles")),
+            "Descripción": _wf_meta_list_text(ad.get("ad_creative_link_descriptions")),
+            "Plataformas": _wf_meta_list_text(ad.get("publisher_platforms")),
+            "URL anuncio": str(ad.get("ad_snapshot_url") or ""),
+        })
+    return pd.DataFrame(rows)
+
+
+def _wf_meta_creative_theme(text: str) -> str:
+    value = (text or "").lower()
+    themes = [
+        ("Libertad / road trip", ("libertad", "road trip", "roadtrip", "ruta", "viaja a tu ritmo", "explora")),
+        ("Naturaleza / escapada", ("naturaleza", "montaña", "playa", "escapada", "outdoor", "camping")),
+        ("Precio / oferta", ("descuento", "oferta", "desde ", "ahorra", "precio", "%", "promo")),
+        ("Facilidad / reserva", ("reserva", "fácil", "facil", "disponibilidad", "recoge", "entrega")),
+        ("Pareja / familia / mascotas", ("familia", "pareja", "niños", "ninos", "mascota", "perro")),
+        ("Vanlife / experiencia", ("vanlife", "experiencia", "despierta", "amanecer", "vivir", "aventura")),
+    ]
+    for theme, keywords in themes:
+        if any(keyword in value for keyword in keywords):
+            return theme
+    return "Propuesta general / sin clasificar"
+
+
+def _wf_meta_library_link(brand: str, media_type: str = "all") -> str:
+    query = requests.utils.quote(brand)
+    return (f"{WF_META_LIBRARY_URL}?active_status=active&ad_type=all&country=ES"
+            f"&is_targeted_country=false&media_type={media_type}&q={query}")
+
+
+def wf_suite_render_meta_competitor_radar() -> None:
+    """Radar manual y sin API para estudiar anuncios públicos y planificar vídeos."""
+    st.subheader("🎬 Meta Ads · Radar creativo de la competencia")
+    st.caption(
+        "Sin API, token ni secrets.toml. Abre la Biblioteca pública de Meta, registra aquí los anuncios que te interesen "
+        "y convierte los patrones creativos en hipótesis de vídeo para Wheely Fog."
+    )
+
+    st.markdown("#### 1. Investiga anuncios públicos")
+    cards = st.columns(3)
+    brands = [
+        ("Roadsurfer", "https://www.facebook.com/ads/library/?active_status=active&ad_type=ALL&country=ES&q=Roadsurfer&search_type=keyword_unordered"),
+        ("Indie Campers", "https://www.facebook.com/ads/library/?active_status=active&ad_type=ALL&country=ES&q=Indie%20Campers&search_type=keyword_unordered"),
+        ("Walabi Campers", "https://www.facebook.com/ads/library/?active_status=active&ad_type=ALL&country=ES&q=Walabi%20Campers&search_type=keyword_unordered"),
+    ]
+    for col, (brand, url) in zip(cards, brands):
+        with col:
+            st.markdown(f"**{brand}**")
+            st.link_button("Ver anuncios en Meta", url, use_container_width=True)
+            st.link_button("Buscar vídeos", url.replace("ad_type=ALL", "ad_type=VIDEO"), use_container_width=True)
+
+    st.divider()
+    st.markdown("#### 2. Guarda un anuncio para analizarlo")
+    if "wf_meta_manual_ads" not in st.session_state:
+        st.session_state["wf_meta_manual_ads"] = []
+
+    with st.form("wf_meta_manual_ad_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            brand = st.selectbox("Competidor", ["Roadsurfer", "Indie Campers", "Walabi Campers", "Otro"], key="wf_meta_manual_brand")
+            format_ad = st.selectbox("Formato", ["Vídeo", "Imagen", "Carrusel", "No identificado"], key="wf_meta_manual_format")
+            ad_url = st.text_input("Enlace del anuncio (URL de la Biblioteca)", placeholder="https://www.facebook.com/ads/library/...")
+        with col2:
+            hook = st.text_input("Gancho inicial / primera frase", placeholder="Ej.: ¿Y si te escapas este finde?")
+            offer = st.text_input("Oferta o mensaje principal", placeholder="Ej.: escapada, precio, libertad, facilidad")
+            cta = st.text_input("Llamada a la acción", placeholder="Ej.: Reserva ahora / descubre rutas")
+        notes = st.text_area("Notas de la creatividad", placeholder="Qué aparece en los primeros segundos, escenas, duración aproximada, estilo, público aparente…")
+        submitted = st.form_submit_button("➕ Guardar anuncio en el radar", type="primary", use_container_width=True)
+        if submitted:
+            if not ad_url.strip() and not hook.strip() and not notes.strip():
+                st.warning("Añade al menos el enlace, el gancho o unas notas para guardar el anuncio.")
+            else:
+                st.session_state["wf_meta_manual_ads"].append({
+                    "Competidor": brand,
+                    "Formato": format_ad,
+                    "Gancho": hook.strip(),
+                    "Mensaje / oferta": offer.strip(),
+                    "CTA": cta.strip(),
+                    "Notas": notes.strip(),
+                    "URL anuncio": ad_url.strip(),
+                    "Fecha de registro": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                })
+                st.success("Anuncio guardado en esta sesión.")
+
+    rows = st.session_state["wf_meta_manual_ads"]
+    if rows:
+        df_ads = pd.DataFrame(rows)
+        st.markdown("#### Anuncios guardados")
+        chosen_brand = st.selectbox("Filtrar registros", ["Todos"] + sorted(df_ads["Competidor"].unique().tolist()), key="wf_meta_manual_filter")
+        visible = df_ads if chosen_brand == "Todos" else df_ads[df_ads["Competidor"] == chosen_brand]
+        st.dataframe(
+            visible,
+            use_container_width=True,
+            hide_index=True,
+            column_config={"URL anuncio": st.column_config.LinkColumn("Abrir anuncio", display_text="Ver anuncio")},
+        )
+        st.download_button(
+            "⬇️ Descargar registros CSV",
+            data=df_ads.to_csv(index=False).encode("utf-8-sig"),
+            file_name="wheelyfog_radar_meta_ads_manual.csv",
+            mime="text/csv",
+            key="wf_meta_manual_download_csv",
+        )
+        if st.button("🗑️ Borrar anuncios guardados de esta sesión", key="wf_meta_manual_clear"):
+            st.session_state["wf_meta_manual_ads"] = []
+            st.rerun()
+    else:
+        st.info("Todavía no has guardado anuncios. Abre la Biblioteca de Meta, revisa las creatividades y registra aquí las que quieras comparar.")
+
+    st.divider()
+    st.markdown("#### 3. Ideas de vídeo para probar en Wheely Fog")
+    st.caption("Estas son hipótesis creativas iniciales; no se presentan como conclusiones verificadas sobre la competencia.")
+    video_ideas = [
+        ("Hook visual + ruta real", "12–18 s en vertical: paisaje potente en el primer segundo, tres escenas del viaje, camper en contexto y CTA para consultar fechas.", "Medir retención inicial y visitas a la página de reserva."),
+        ("Escapada concreta de 48 horas", "Mostrar salida, parada, noche y desayuno con una ruta realista y una propuesta concreta para pareja o amigos.", "Medir clics cualificados y coste por reserva."),
+        ("La reserva sin incertidumbre", "Enseñar recogida, equipamiento incluido, cómo se conduce y respuestas a las dudas más frecuentes.", "Medir avance del usuario en el proceso de reserva."),
+        ("Precio transparente", "Comunicar un precio real y verificable con lo que incluye; evitar descuentos ficticios y costes sorpresa.", "Medir conversión y coste por reserva, no solo CTR."),
+        ("UGC: un día de viaje", "Cliente o creador autorizado cuenta una experiencia auténtica con planos POV, subtítulos y sonido ambiente.", "Comparar retención, clics y reservas frente a un vídeo de marca."),
+        ("De rutina a aventura", "Contraste rápido entre una mañana cotidiana y la primera parada del viaje, con una propuesta de escapada sencilla.", "Medir reproducción completa y visitas a disponibilidad."),
+    ]
+    for idx, (title, concept, metric) in enumerate(video_ideas, start=1):
+        with st.expander(f"Vídeo {idx} · {title}", expanded=(idx == 1), key=f"wf_meta_manual_idea_{idx}"):
+            st.write(concept)
+            st.caption(f"Qué medir: {metric}")
+
+    st.warning(
+        "Importante: la Biblioteca de anuncios permite inspeccionar creatividades públicas, pero no ofrece de forma general "
+        "el CTR, las conversiones, el CPA o el ROAS de anuncios comerciales de competidores. Guarda tus propios resultados "
+        "de campaña para saber qué concepto funciona realmente. Los registros se mantienen en la sesión de Streamlit; descarga el CSV para conservarlos."
+    )
+
+
 def wf_suite_render() -> None:
     """Punto de entrada aislado de la Executive Intelligence Suite."""
     st.title("🚀 Wheelyfog Executive Intelligence Suite")
     st.caption("Centro ejecutivo de leads, inteligencia competitiva y escenarios de adquisición.")
-    tabs = st.tabs(["🧠 Grokbot & ERP Leads", "📡 Radar Competitivo", "📈 ChatGPT Ads"])
+    tabs = st.tabs([
+        "🧠 Grokbot & ERP Leads",
+        "📡 Radar Competitivo",
+        "📈 ChatGPT Ads",
+        "🎬 Meta Ads Competencia",
+    ])
     with tabs[0]:
         wf_suite_render_leads()
     with tabs[1]:
         wf_suite_render_competitive_radar()
     with tabs[2]:
         wf_suite_render_ads_simulator()
+    with tabs[3]:
+        wf_suite_render_meta_competitor_radar()
 
 
 with st.sidebar:
     st.markdown("## 🚐 WheelyFog AI")
     st.markdown("Gestión integrada de canales digitales.")
-    wf_navigation = st.radio(
-        "Navegación principal",
-        ["Dashboard Principal", "🚀 Executive Intelligence Suite"],
-        index=0,
-        key="wf_suite_navigation",
+    hemisferio = st.radio(
+        "Módulos del Sistema:",
+        (
+            "🤖 Recomendaciones del Agente",
+            "📡 SEO Real (Search Console)",
+            "🛰️ SEM (Performance & Subastas)",
+            "📝 SEO (Content Factory Orgánico)",
+            "🔑 Auditoría Cruzada (SEO vs SEM)",
+            "🧠 Grokbot & ERP Leads",
+            "📡 Radar Competitivo",
+            "📈 ChatGPT Ads",
+            "🎬 Meta Ads Competencia",
+        ),
+        key="wf_system_module_navigation",
     )
     st.divider()
 
-    if wf_navigation == "Dashboard Principal":
-        hemisferio = st.radio(
-            "Módulos del Sistema:",
-            (
-                "🤖 Recomendaciones del Agente",
-                "📡 SEO Real (Search Console)",
-                "🛰️ SEM (Performance & Subastas)",
-                "📝 SEO (Content Factory Orgánico)",
-                "🔑 Auditoría Cruzada (SEO vs SEM)",
-            ),
-        )
-        st.divider()
+    # --- Estado de la carga automatica desde la Google Sheet por defecto ---
+    with st.expander("🔄 Carga automática (Google Sheets)",
+                     expanded=not st.session_state.auto_load_any_ok):
+        st.caption(f"Fuente por defecto: `.../{DEFAULT_GOOGLE_SHEET_URL.split('/d/')[-1][:20]}...`")
+        for nivel, msg in st.session_state.auto_load_log:
+            (st.success if nivel == "ok" else st.warning)(msg)
+        if not st.session_state.auto_load_log:
+            st.caption("Aún no se ha intentado la carga automática.")
+        if st.button("🔄 Reintentar carga automática", key="retry_autoload", use_container_width=True):
+            _cached_fetch_google_sheet.clear()
+            st.session_state.auto_load_attempted = False
+            st.rerun()
+        if not st.session_state.auto_load_any_ok:
+            st.caption("⚠️ Si todas fallan, comprueba que la hoja esté compartida como "
+                      "'Cualquiera con el enlace · Lector' (pruébalo en una ventana de "
+                      "incógnito) y que los nombres de las pestañas coincidan.")
 
-        # --- Estado de la carga automatica desde la Google Sheet por defecto ---
-        with st.expander("🔄 Carga automática (Google Sheets)",
-                         expanded=not st.session_state.auto_load_any_ok):
-            st.caption(f"Fuente por defecto: `.../{DEFAULT_GOOGLE_SHEET_URL.split('/d/')[-1][:20]}...`")
-            for nivel, msg in st.session_state.auto_load_log:
-                (st.success if nivel == "ok" else st.warning)(msg)
-            if not st.session_state.auto_load_log:
-                st.caption("Aún no se ha intentado la carga automática.")
-            if st.button("🔄 Reintentar carga automática", key="retry_autoload", use_container_width=True):
-                _cached_fetch_google_sheet.clear()
-                st.session_state.auto_load_attempted = False
-                st.rerun()
-            if not st.session_state.auto_load_any_ok:
-                st.caption("⚠️ Si todas fallan, comprueba que la hoja esté compartida como "
-                          "'Cualquiera con el enlace · Lector' (pruébalo en una ventana de "
-                          "incógnito) y que los nombres de las pestañas coincidan.")
+    st.divider()
 
-        st.divider()
+    st.markdown("### 📤 Sube tus archivos (auto-detecta SEO/SEM)")
+    st.caption("**SEO**: ZIP de GSC (Rendimiento/Indexación) o CSV/XLSX. "
+               "**SEM**: 'Informe de historial de cambios' de Google Ads (CSV/XLSX).")
+    up_files = st.file_uploader("Arrastra aquí cualquier archivo",
+                                type=["zip", "csv", "xlsx", "xls"],
+                                accept_multiple_files=True, key="gsc_up")
+    if up_files:
+        for uf in up_files:
+            seccion, detalle = None, ""
+            name_lower = uf.name.lower()
 
-        st.markdown("### 📤 Sube tus archivos (auto-detecta SEO/SEM)")
-        st.caption("**SEO**: ZIP de GSC (Rendimiento/Indexación) o CSV/XLSX. "
-                   "**SEM**: 'Informe de historial de cambios' de Google Ads (CSV/XLSX).")
-        up_files = st.file_uploader("Arrastra aquí cualquier archivo",
-                                    type=["zip", "csv", "xlsx", "xls"],
-                                    accept_multiple_files=True, key="gsc_up")
-        if up_files:
-            for uf in up_files:
-                seccion, detalle = None, ""
-                name_lower = uf.name.lower()
+            # 1) XLSX/XLS: puede ser la exportacion COMPLETA de Ads (varias
+            #    pestañas: Campañas/Términos/Keywords/Negativas/Historial).
+            #    Se detecta por columnas, pestaña a pestaña, sin depender de
+            #    que el archivo tenga una unica hoja.
+            encontrados = []
+            if name_lower.endswith((".xlsx", ".xls")):
+                try:
+                    xls = pd.ExcelFile(io.BytesIO(uf.getvalue()))
+                    sheet_dict = {s: pd.read_excel(xls, sheet_name=s) for s in xls.sheet_names}
+                except Exception:
+                    sheet_dict = {}
+                detectado = _autodetect_ads_workbook(sheet_dict) if sheet_dict else {}
+                if detectado.get("campañas") is not None:
+                    st.session_state.ads_perf_campaigns = detectado["campañas"]
+                    encontrados.append(f"Campañas ({len(detectado['campañas'])})")
+                if detectado.get("terminos") is not None:
+                    st.session_state.ads_perf_terms = detectado["terminos"]
+                    encontrados.append(f"Términos ({len(detectado['terminos'])})")
+                if detectado.get("keywords") is not None:
+                    st.session_state.ads_perf_keywords = detectado["keywords"]
+                    encontrados.append(f"Keywords ({len(detectado['keywords'])})")
+                if detectado.get("negativas") is not None:
+                    st.session_state.ads_perf_negatives = detectado["negativas"]
+                    encontrados.append(f"Negativas ({len(detectado['negativas'])})")
+                if detectado.get("cambios") is not None:
+                    st.session_state.ads_changes = detectado["cambios"]
+                    encontrados.append(f"Historial ({len(detectado['cambios'])})")
 
-                # 1) XLSX/XLS: puede ser la exportacion COMPLETA de Ads (varias
-                #    pestañas: Campañas/Términos/Keywords/Negativas/Historial).
-                #    Se detecta por columnas, pestaña a pestaña, sin depender de
-                #    que el archivo tenga una unica hoja.
-                encontrados = []
-                if name_lower.endswith((".xlsx", ".xls")):
+            if encontrados:
+                seccion, detalle = "SEM", " · ".join(encontrados)
+                st.success(f"🛰️ SEM · {uf.name}: {detalle}")
+            else:
+                # 2) ¿Es un CSV/XLSX de historial de cambios "clasico" (una sola
+                #    columna Cambios en texto libre, sin metricas de coste)?
+                es_ads = ("cambio" in name_lower or "historial" in name_lower
+                          or "change" in name_lower)
+                ads_df = None
+                if es_ads or name_lower.endswith((".csv", ".xlsx", ".xls")):
                     try:
-                        xls = pd.ExcelFile(io.BytesIO(uf.getvalue()))
-                        sheet_dict = {s: pd.read_excel(xls, sheet_name=s) for s in xls.sheet_names}
+                        ads_df = parse_ads_change_history(uf.getvalue(), uf.name)
                     except Exception:
-                        sheet_dict = {}
-                    detectado = _autodetect_ads_workbook(sheet_dict) if sheet_dict else {}
-                    if detectado.get("campañas") is not None:
-                        st.session_state.ads_perf_campaigns = detectado["campañas"]
-                        encontrados.append(f"Campañas ({len(detectado['campañas'])})")
-                    if detectado.get("terminos") is not None:
-                        st.session_state.ads_perf_terms = detectado["terminos"]
-                        encontrados.append(f"Términos ({len(detectado['terminos'])})")
-                    if detectado.get("keywords") is not None:
-                        st.session_state.ads_perf_keywords = detectado["keywords"]
-                        encontrados.append(f"Keywords ({len(detectado['keywords'])})")
-                    if detectado.get("negativas") is not None:
-                        st.session_state.ads_perf_negatives = detectado["negativas"]
-                        encontrados.append(f"Negativas ({len(detectado['negativas'])})")
-                    if detectado.get("cambios") is not None:
-                        st.session_state.ads_changes = detectado["cambios"]
-                        encontrados.append(f"Historial ({len(detectado['cambios'])})")
-
-                if encontrados:
-                    seccion, detalle = "SEM", " · ".join(encontrados)
+                        ads_df = None
+                if ads_df is not None and len(ads_df) > 0:
+                    st.session_state.ads_changes = ads_df
+                    seccion, detalle = "SEM", f"{len(ads_df)} cambios de Ads"
                     st.success(f"🛰️ SEM · {uf.name}: {detalle}")
                 else:
-                    # 2) ¿Es un CSV/XLSX de historial de cambios "clasico" (una sola
-                    #    columna Cambios en texto libre, sin metricas de coste)?
-                    es_ads = ("cambio" in name_lower or "historial" in name_lower
-                              or "change" in name_lower)
-                    ads_df = None
-                    if es_ads or name_lower.endswith((".csv", ".xlsx", ".xls")):
-                        try:
-                            ads_df = parse_ads_change_history(uf.getvalue(), uf.name)
-                        except Exception:
-                            ads_df = None
-                    if ads_df is not None and len(ads_df) > 0:
-                        st.session_state.ads_changes = ads_df
-                        seccion, detalle = "SEM", f"{len(ads_df)} cambios de Ads"
-                        st.success(f"🛰️ SEM · {uf.name}: {detalle}")
+                    # 3) Si no, tratar como GSC (SEO)
+                    r = parse_gsc_upload(uf)
+                    got = False
+                    if r["queries"] is not None:
+                        st.session_state.gsc_queries = r["queries"]; got = True
+                    if r["pages"] is not None:
+                        st.session_state.gsc_pages = r["pages"]; got = True
+                    if r["index_urls"] is not None:
+                        issue = r["index_issue"] or uf.name
+                        st.session_state.gsc_index = [x for x in st.session_state.gsc_index if x[0] != issue]
+                        st.session_state.gsc_index.append((issue, r["index_urls"])); got = True
+                    if r.get("timeseries") is not None:
+                        st.session_state.gsc_ts = r["timeseries"]; got = True
+                    if got:
+                        seccion, detalle = "SEO", r["msg"]
+                        st.success(f"📡 SEO · {uf.name}: {r['msg']}")
                     else:
-                        # 3) Si no, tratar como GSC (SEO)
-                        r = parse_gsc_upload(uf)
-                        got = False
-                        if r["queries"] is not None:
-                            st.session_state.gsc_queries = r["queries"]; got = True
-                        if r["pages"] is not None:
-                            st.session_state.gsc_pages = r["pages"]; got = True
-                        if r["index_urls"] is not None:
-                            issue = r["index_issue"] or uf.name
-                            st.session_state.gsc_index = [x for x in st.session_state.gsc_index if x[0] != issue]
-                            st.session_state.gsc_index.append((issue, r["index_urls"])); got = True
-                        if r.get("timeseries") is not None:
-                            st.session_state.gsc_ts = r["timeseries"]; got = True
-                        if got:
-                            seccion, detalle = "SEO", r["msg"]
-                            st.success(f"📡 SEO · {uf.name}: {r['msg']}")
-                        else:
-                            st.warning(f"❓ {uf.name}: {r['msg']}")
-                if seccion:
+                        st.warning(f"❓ {uf.name}: {r['msg']}")
+            if seccion:
+                st.session_state.file_registry = [
+                    x for x in st.session_state.file_registry if x[0] != uf.name]
+                st.session_state.file_registry.append(
+                    (uf.name, seccion, detalle, datetime.today().strftime("%Y-%m-%d %H:%M")))
+
+    st.divider()
+    st.markdown("### 🔗 O conecta Google Sheets")
+    st.caption("Hojas **públicas** ('Cualquiera con el enlace · Lector') se leen sin credenciales. "
+               "Para hojas **privadas**, configura una cuenta de servicio en `st.secrets`.")
+    with st.expander("Conectar una hoja", expanded=False):
+        if st.button("Usar la hoja por defecto ↑", key="gs_use_default", use_container_width=True):
+            st.session_state["gs_url_input"] = DEFAULT_GOOGLE_SHEET_URL
+        gs_url = st.text_input("URL o ID de Google Sheets:", key="gs_url_input",
+                               placeholder="https://docs.google.com/spreadsheets/d/...")
+        gs_tab = st.text_input("Nombre de la pestaña (opcional, se ignora en 'Exportación completa'):",
+                               key="gs_tab_input")
+        gs_tipo = st.radio(
+            "¿Qué contiene esta hoja?",
+            ["Exportación completa de Google Ads (todas las pestañas)",
+             "Auto-detectar una pestaña (Consultas / Páginas / Cambios de Ads)",
+             "Calendario editorial (Content Factory)"],
+            key="gs_tipo",
+        )
+        if st.button("📥 Cargar hoja", key="gs_load_btn", use_container_width=True) and gs_url:
+            if gs_tipo.startswith("Exportación completa"):
+                with st.spinner("Leyendo las 5 pestañas de Google Ads..."):
+                    encontrados = []
+                    for tipo, tab_name in ADS_EXPORT_SHEET_NAMES.items():
+                        df_raw, msg_t, metodo = _cached_fetch_google_sheet(gs_url, tab_name)
+                        if df_raw is None:
+                            continue
+                        fn = {"campañas": normalize_ads_campaigns, "terminos": normalize_ads_search_terms,
+                              "keywords": normalize_ads_keywords, "negativas": normalize_ads_negatives,
+                              "cambios": _try_parse_ads_change_history}[tipo]
+                        out = fn(df_raw)
+                        if out is None or out.empty:
+                            continue
+                        setattr_key = {"campañas": "ads_perf_campaigns", "terminos": "ads_perf_terms",
+                                      "keywords": "ads_perf_keywords", "negativas": "ads_perf_negatives",
+                                      "cambios": "ads_changes"}[tipo]
+                        st.session_state[setattr_key] = out
+                        encontrados.append(f"{tab_name} ({len(out)})")
+                if encontrados:
+                    st.success(f"🛰️ SEM · " + " · ".join(encontrados))
                     st.session_state.file_registry = [
-                        x for x in st.session_state.file_registry if x[0] != uf.name]
+                        x for x in st.session_state.file_registry if x[0] != "Google Sheets · Ads (completo)"]
                     st.session_state.file_registry.append(
-                        (uf.name, seccion, detalle, datetime.today().strftime("%Y-%m-%d %H:%M")))
-
-        st.divider()
-        st.markdown("### 🔗 O conecta Google Sheets")
-        st.caption("Hojas **públicas** ('Cualquiera con el enlace · Lector') se leen sin credenciales. "
-                   "Para hojas **privadas**, configura una cuenta de servicio en `st.secrets`.")
-        with st.expander("Conectar una hoja", expanded=False):
-            if st.button("Usar la hoja por defecto ↑", key="gs_use_default", use_container_width=True):
-                st.session_state["gs_url_input"] = DEFAULT_GOOGLE_SHEET_URL
-            gs_url = st.text_input("URL o ID de Google Sheets:", key="gs_url_input",
-                                   placeholder="https://docs.google.com/spreadsheets/d/...")
-            gs_tab = st.text_input("Nombre de la pestaña (opcional, se ignora en 'Exportación completa'):",
-                                   key="gs_tab_input")
-            gs_tipo = st.radio(
-                "¿Qué contiene esta hoja?",
-                ["Exportación completa de Google Ads (todas las pestañas)",
-                 "Auto-detectar una pestaña (Consultas / Páginas / Cambios de Ads)",
-                 "Calendario editorial (Content Factory)"],
-                key="gs_tipo",
-            )
-            if st.button("📥 Cargar hoja", key="gs_load_btn", use_container_width=True) and gs_url:
-                if gs_tipo.startswith("Exportación completa"):
-                    with st.spinner("Leyendo las 5 pestañas de Google Ads..."):
-                        encontrados = []
-                        for tipo, tab_name in ADS_EXPORT_SHEET_NAMES.items():
-                            df_raw, msg_t, metodo = _cached_fetch_google_sheet(gs_url, tab_name)
-                            if df_raw is None:
-                                continue
-                            fn = {"campañas": normalize_ads_campaigns, "terminos": normalize_ads_search_terms,
-                                  "keywords": normalize_ads_keywords, "negativas": normalize_ads_negatives,
-                                  "cambios": _try_parse_ads_change_history}[tipo]
-                            out = fn(df_raw)
-                            if out is None or out.empty:
-                                continue
-                            setattr_key = {"campañas": "ads_perf_campaigns", "terminos": "ads_perf_terms",
-                                          "keywords": "ads_perf_keywords", "negativas": "ads_perf_negatives",
-                                          "cambios": "ads_changes"}[tipo]
-                            st.session_state[setattr_key] = out
-                            encontrados.append(f"{tab_name} ({len(out)})")
-                    if encontrados:
-                        st.success(f"🛰️ SEM · " + " · ".join(encontrados))
-                        st.session_state.file_registry = [
-                            x for x in st.session_state.file_registry if x[0] != "Google Sheets · Ads (completo)"]
-                        st.session_state.file_registry.append(
-                            ("Google Sheets · Ads (completo)", "SEM", " · ".join(encontrados),
-                             datetime.today().strftime("%Y-%m-%d %H:%M")))
-                        st.rerun()
-                    else:
-                        st.error("❌ No he podido leer ninguna de las 5 pestañas esperadas "
-                                 f"({', '.join(ADS_EXPORT_SHEET_NAMES.values())}). Revisa que la hoja "
-                                 "sea pública y que esos sean los nombres reales de las pestañas.")
+                        ("Google Sheets · Ads (completo)", "SEM", " · ".join(encontrados),
+                         datetime.today().strftime("%Y-%m-%d %H:%M")))
+                    st.rerun()
                 else:
-                    with st.spinner("Leyendo Google Sheets..."):
-                        df_gs, msg_gs, metodo = _cached_fetch_google_sheet(gs_url, gs_tab or None)
-                    if df_gs is None:
-                        st.error(f"❌ {msg_gs}")
-                    else:
-                        icono_metodo = "🌐" if metodo == "publica" else "🔐"
-                        if gs_tipo.startswith("Calendario"):
-                            cal = normalize_content_calendar(df_gs)
-                            if cal is None:
-                                st.error("No encuentro columna de Título ni Keyword. Revisa las cabeceras de la "
-                                         "hoja (admite variantes: 'Título', 'Keyword', 'Palabra clave', 'Estado'...).")
-                            else:
-                                st.session_state.content_calendar = cal
-                                st.session_state.content_calendar_url = gs_url
-                                st.success(f"{icono_metodo} Calendario cargado: {len(cal)} artículos ({msg_gs}).")
-                                st.session_state.file_registry = [
-                                    x for x in st.session_state.file_registry if x[0] != "Google Sheets · Calendario"]
-                                st.session_state.file_registry.append(
-                                    ("Google Sheets · Calendario", "SEO", f"{len(cal)} filas",
-                                     datetime.today().strftime("%Y-%m-%d %H:%M")))
-                                st.rerun()
+                    st.error("❌ No he podido leer ninguna de las 5 pestañas esperadas "
+                             f"({', '.join(ADS_EXPORT_SHEET_NAMES.values())}). Revisa que la hoja "
+                             "sea pública y que esos sean los nombres reales de las pestañas.")
+            else:
+                with st.spinner("Leyendo Google Sheets..."):
+                    df_gs, msg_gs, metodo = _cached_fetch_google_sheet(gs_url, gs_tab or None)
+                if df_gs is None:
+                    st.error(f"❌ {msg_gs}")
+                else:
+                    icono_metodo = "🌐" if metodo == "publica" else "🔐"
+                    if gs_tipo.startswith("Calendario"):
+                        cal = normalize_content_calendar(df_gs)
+                        if cal is None:
+                            st.error("No encuentro columna de Título ni Keyword. Revisa las cabeceras de la "
+                                     "hoja (admite variantes: 'Título', 'Keyword', 'Palabra clave', 'Estado'...).")
                         else:
-                            ads_df = _parse_ads_df(df_gs)
-                            if ads_df is not None and len(ads_df) > 0:
-                                st.session_state.ads_changes = ads_df
-                                st.success(f"{icono_metodo} 🛰️ SEM · {len(ads_df)} cambios de Ads ({msg_gs}).")
+                            st.session_state.content_calendar = cal
+                            st.session_state.content_calendar_url = gs_url
+                            st.success(f"{icono_metodo} Calendario cargado: {len(cal)} artículos ({msg_gs}).")
+                            st.session_state.file_registry = [
+                                x for x in st.session_state.file_registry if x[0] != "Google Sheets · Calendario"]
+                            st.session_state.file_registry.append(
+                                ("Google Sheets · Calendario", "SEO", f"{len(cal)} filas",
+                                 datetime.today().strftime("%Y-%m-%d %H:%M")))
+                            st.rerun()
+                    else:
+                        ads_df = _parse_ads_df(df_gs)
+                        if ads_df is not None and len(ads_df) > 0:
+                            st.session_state.ads_changes = ads_df
+                            st.success(f"{icono_metodo} 🛰️ SEM · {len(ads_df)} cambios de Ads ({msg_gs}).")
+                            st.session_state.file_registry = [
+                                x for x in st.session_state.file_registry if x[0] != "Google Sheets · Ads"]
+                            st.session_state.file_registry.append(
+                                ("Google Sheets · Ads", "SEM", f"{len(ads_df)} cambios",
+                                 datetime.today().strftime("%Y-%m-%d %H:%M")))
+                            st.rerun()
+                        else:
+                            r = _classify_and_normalize_df(df_gs)
+                            got = False
+                            if r["queries"] is not None:
+                                st.session_state.gsc_queries = r["queries"]; got = True
+                            if r["pages"] is not None:
+                                st.session_state.gsc_pages = r["pages"]; got = True
+                            if r["index_urls"] is not None:
+                                issue = r["index_issue"] or "Google Sheets"
+                                st.session_state.gsc_index = [x for x in st.session_state.gsc_index if x[0] != issue]
+                                st.session_state.gsc_index.append((issue, r["index_urls"])); got = True
+                            if r.get("timeseries") is not None:
+                                st.session_state.gsc_ts = r["timeseries"]; got = True
+                            if got:
+                                st.success(f"{icono_metodo} 📡 SEO · {r['msg']} ({msg_gs}).")
                                 st.session_state.file_registry = [
-                                    x for x in st.session_state.file_registry if x[0] != "Google Sheets · Ads"]
+                                    x for x in st.session_state.file_registry if x[0] != "Google Sheets · SEO"]
                                 st.session_state.file_registry.append(
-                                    ("Google Sheets · Ads", "SEM", f"{len(ads_df)} cambios",
+                                    ("Google Sheets · SEO", "SEO", r["msg"],
                                      datetime.today().strftime("%Y-%m-%d %H:%M")))
                                 st.rerun()
                             else:
-                                r = _classify_and_normalize_df(df_gs)
-                                got = False
-                                if r["queries"] is not None:
-                                    st.session_state.gsc_queries = r["queries"]; got = True
-                                if r["pages"] is not None:
-                                    st.session_state.gsc_pages = r["pages"]; got = True
-                                if r["index_urls"] is not None:
-                                    issue = r["index_issue"] or "Google Sheets"
-                                    st.session_state.gsc_index = [x for x in st.session_state.gsc_index if x[0] != issue]
-                                    st.session_state.gsc_index.append((issue, r["index_urls"])); got = True
-                                if r.get("timeseries") is not None:
-                                    st.session_state.gsc_ts = r["timeseries"]; got = True
-                                if got:
-                                    st.success(f"{icono_metodo} 📡 SEO · {r['msg']} ({msg_gs}).")
-                                    st.session_state.file_registry = [
-                                        x for x in st.session_state.file_registry if x[0] != "Google Sheets · SEO"]
-                                    st.session_state.file_registry.append(
-                                        ("Google Sheets · SEO", "SEO", r["msg"],
-                                         datetime.today().strftime("%Y-%m-%d %H:%M")))
-                                    st.rerun()
-                                else:
-                                    st.warning(f"❓ {r['msg']}")
+                                st.warning(f"❓ {r['msg']}")
 
-            if st.session_state.content_calendar is not None:
-                n_pend = int((st.session_state.content_calendar["Estado"].str.lower() == "pendiente").sum())
-                st.caption(f"🗓️ Calendario activo: {len(st.session_state.content_calendar)} artículos "
-                          f"· {n_pend} pendientes")
+        if st.session_state.content_calendar is not None:
+            n_pend = int((st.session_state.content_calendar["Estado"].str.lower() == "pendiente").sum())
+            st.caption(f"🗓️ Calendario activo: {len(st.session_state.content_calendar)} artículos "
+                      f"· {n_pend} pendientes")
 
-        # Registro de archivos en memoria (para no perder de vista qué hay cargado)
-        if st.session_state.file_registry:
-            st.markdown("##### 🗂️ Archivos en memoria")
-            for nombre, seccion, detalle, ts in st.session_state.file_registry:
-                icono = "🛰️" if seccion == "SEM" else "📡"
-                st.caption(f"{icono} **{seccion}** · {nombre[:32]} · {detalle}")
+    # Registro de archivos en memoria (para no perder de vista qué hay cargado)
+    if st.session_state.file_registry:
+        st.markdown("##### 🗂️ Archivos en memoria")
+        for nombre, seccion, detalle, ts in st.session_state.file_registry:
+            icono = "🛰️" if seccion == "SEM" else "📡"
+            st.caption(f"{icono} **{seccion}** · {nombre[:32]} · {detalle}")
 
-        st.divider()
-        st.markdown("### 📅 Filtro Temporal (SEM demo)")
-        dias_filtro = st.slider("Rango de análisis (días previos):", 7, 90, 30, 1)
-        fecha_limite = datetime.today() - timedelta(days=dias_filtro)
-        df_sem = df_sem_raw[pd.to_datetime(df_sem_raw["Fecha"]) >= fecha_limite]
+    st.divider()
+    st.markdown("### 📅 Filtro Temporal (SEM demo)")
+    dias_filtro = st.slider("Rango de análisis (días previos):", 7, 90, 30, 1)
+    fecha_limite = datetime.today() - timedelta(days=dias_filtro)
+    df_sem = df_sem_raw[pd.to_datetime(df_sem_raw["Fecha"]) >= fecha_limite]
 
-        st.divider()
-        if st.session_state.ads_perf_campaigns is not None:
-            gasto_tot = st.session_state.ads_perf_campaigns["Coste"].sum()
-            st.success(f"🟢 Google Ads (performance real): {gasto_tot:,.0f} € de gasto cargados")
-        else:
-            st.warning("🟡 Google Ads (gasto/ROAS): sin datos reales (sube el Excel o conéctalo por Sheets)")
-        if st.session_state.ads_changes is not None:
-            st.success(f"🟢 Google Ads (historial): {len(st.session_state.ads_changes)} cambios")
-        else:
-            st.warning("🟡 Google Ads (historial): sin datos")
-        if st.session_state.gsc_queries is not None or st.session_state.gsc_pages is not None:
-            st.success("🟢 Search Console: datos cargados")
-        else:
-            st.warning("🟡 Search Console: sin datos (sube el ZIP o conéctalo por Sheets)")
-        st.warning("🟡 GA4: sin conectar")
-        if _get_anthropic_client() is not None:
-            st.success("🟢 Redacción IA (Anthropic): activa")
-        else:
-            st.info("🔵 Redacción IA: configura ANTHROPIC_API_KEY para artículos 100% IA "
-                    "(si no, se usa la plantilla de respaldo)")
+    st.divider()
+    if st.session_state.ads_perf_campaigns is not None:
+        gasto_tot = st.session_state.ads_perf_campaigns["Coste"].sum()
+        st.success(f"🟢 Google Ads (performance real): {gasto_tot:,.0f} € de gasto cargados")
+    else:
+        st.warning("🟡 Google Ads (gasto/ROAS): sin datos reales (sube el Excel o conéctalo por Sheets)")
+    if st.session_state.ads_changes is not None:
+        st.success(f"🟢 Google Ads (historial): {len(st.session_state.ads_changes)} cambios")
+    else:
+        st.warning("🟡 Google Ads (historial): sin datos")
+    if st.session_state.gsc_queries is not None or st.session_state.gsc_pages is not None:
+        st.success("🟢 Search Console: datos cargados")
+    else:
+        st.warning("🟡 Search Console: sin datos (sube el ZIP o conéctalo por Sheets)")
+    st.warning("🟡 GA4: sin conectar")
+    if _get_anthropic_client() is not None:
+        st.success("🟢 Redacción IA (Anthropic): activa")
+    else:
+        st.info("🔵 Redacción IA: configura ANTHROPIC_API_KEY para artículos 100% IA "
+                "(si no, se usa la plantilla de respaldo)")
 
 
-if wf_navigation == "🚀 Executive Intelligence Suite":
-    wf_suite_render()
+# Los módulos ejecutivos se abren desde el mismo menú lateral que el resto del sistema.
+if hemisferio == "🧠 Grokbot & ERP Leads":
+    st.title("🧠 Grokbot & ERP Leads")
+    wf_suite_render_leads()
+    st.stop()
+elif hemisferio == "📡 Radar Competitivo":
+    st.title("📡 Radar Competitivo")
+    wf_suite_render_competitive_radar()
+    st.stop()
+elif hemisferio == "📈 ChatGPT Ads":
+    st.title("📈 ChatGPT Ads")
+    wf_suite_render_ads_simulator()
+    st.stop()
+elif hemisferio == "🎬 Meta Ads Competencia":
+    st.title("🎬 Meta Ads Competencia")
+    wf_suite_render_meta_competitor_radar()
     st.stop()
 
 
