@@ -3961,7 +3961,7 @@ elif hemisferio == "🔑 Auditoría Cruzada (SEO vs SEM)":
             "canibalizacion_detectada": canib_aud[["Término", "Coste", "ROAS", "Posicion"]].round(2).to_dict("records"),
             "gasto_total_canibalizado_eur": round(float(canib_aud["Coste"].sum()), 2),
         })
-    render_analisis_experto(
+    render_analisis_experto()
         "auditoria_cruzada_seo_sem", "Auditoría Cruzada (SEO vs SEM)",
         "Este módulo cruza el gasto REAL de Google Ads con la posición REAL orgánica "
         "para el mismo término exacto. Sé explícito sobre cuánto dinero se está "
