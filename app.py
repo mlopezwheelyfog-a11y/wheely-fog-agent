@@ -4101,7 +4101,7 @@ def render_advanced_intelligence_suite() -> None:
     """
     Renderiza de forma limpia, estructurada y profesional el panel avanzado
     de Grokbot, Competencia y ChatGPT Ads al final de la aplicación.
-    """
+    ""
     st.markdown("---")
     with st.expander("🚀 Wheelyfog Executive Intelligence Suite (Grokbot & Ads)", expanded=False):
         
