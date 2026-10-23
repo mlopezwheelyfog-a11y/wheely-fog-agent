@@ -4291,7 +4291,7 @@ def render_advanced_intelligence_suite() -> None:
 # Ejecución automática al final de la app
 render_advanced_intelligence_suite()
 # =============================================================================
-# WHEELYFOG EXECUTIVE INTELLIGENCE SUITE (Módulo Autónomo con Sidebar)
+# WHEELYFOG EXECUTIVE INTELLIGENCE SUITE (Módulo Autónomo e Interactivo)
 # =============================================================================
 
 from typing import Dict, List, Optional, Any
@@ -4369,115 +4369,134 @@ def fetch_competitor_intelligence() -> pd.DataFrame:
 
 
 def render_advanced_intelligence_suite() -> None:
-    """Renderiza el panel ejecutivo interactivo al final de la aplicación."""
+    """Renderiza la Suite de Inteligencia Ejecutiva como panel independiente."""
+    st.title("🚀 Executive Intelligence Suite")
+    st.caption("Panel de control aislado para la trazabilidad de Grokbot, Inteligencia Competitiva y Proyecciones de ChatGPT Ads.")
     st.markdown("---")
-    with st.expander("🚀 Wheelyfog Executive Intelligence Suite (Grokbot & Ads)", expanded=True):
+    
+    sub_tab_leads, sub_tab_comp, sub_tab_gpt = st.tabs([
+        "🤖 Grokbot & ERP Leads", 
+        "🌐 Radar Competitivo", 
+        "🎯 ChatGPT Ads (Panel Interactivo)"
+    ])
+    
+    # -------------------------------------------------------------------------
+    # TAB 1: GROKBOT LEADS
+    # -------------------------------------------------------------------------
+    with sub_tab_leads:
+        st.markdown("#### Trazabilidad de Leads en Tiempo Real (Supabase)")
+        df_leads = fetch_grokbot_leads_from_supabase()
         
-        sub_tab_leads, sub_tab_comp, sub_tab_gpt = st.tabs([
-            "🤖 Grokbot & ERP Leads", 
-            "🌐 Radar Competitivo", 
-            "🎯 ChatGPT Ads (Panel Interactivo)"
-        ])
+        estado_seleccionado = st.selectbox(
+            "Filtrar por Estado CRM:", 
+            ["Todos"] + list(df_leads["Estado CRM"].unique())
+        )
+        df_filtered = df_leads if estado_seleccionado == "Todos" else df_leads[df_leads["Estado CRM"] == estado_seleccionado]
         
-        # Pestaña 1: Leads
-        with sub_tab_leads:
-            st.markdown("#### Trazabilidad de Leads en Tiempo Real (Supabase)")
-            df_leads = fetch_grokbot_leads_from_supabase()
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Leads Mostrados", len(df_filtered))
+        with col2:
+            qualified_count = len(df_filtered[df_filtered["Estado CRM"].astype(str).str.contains("Cualificado|Reserva|Presupuesto", na=False)])
+            st.metric("Leads Cualificados", qualified_count)
+        with col3:
+            won_count = len(df_filtered[df_filtered["Estado CRM"] == "Reserva Ganada"])
+            st.metric("Reservas Cerradas", won_count)
             
-            estado_seleccionado = st.selectbox(
-                "Filtrar por Estado CRM:", 
-                ["Todos"] + list(df_leads["Estado CRM"].unique())
-            )
-            df_filtered = df_leads if estado_seleccionado == "Todos" else df_leads[df_leads["Estado CRM"] == estado_seleccionado]
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Leads Mostrados", len(df_filtered))
-            with col2:
-                qualified_count = len(df_filtered[df_filtered["Estado CRM"].astype(str).str.contains("Cualificado|Reserva|Presupuesto", na=False)])
-                st.metric("Leads Cualificados", qualified_count)
-            with col3:
-                won_count = len(df_filtered[df_filtered["Estado CRM"] == "Reserva Ganada"])
-                st.metric("Reservas Cerradas", won_count)
-                
-            st.dataframe(df_filtered, use_container_width=True, hide_index=True)
-            
-        # Pestaña 2: Competencia
-        with sub_tab_comp:
-            st.markdown("#### Monitorización de Competencia y Sugerencias de Reacción")
-            df_comp = fetch_competitor_intelligence()
-            st.dataframe(df_comp, use_container_width=True, hide_index=True)
-            
-            st.markdown("##### 💡 Acciones Recomendadas por el Agente")
+        st.dataframe(df_filtered, use_container_width=True, hide_index=True)
+        
+    # -------------------------------------------------------------------------
+    # TAB 2: COMPETENCIA (RECOMENDACIONES CERRADAS POR DEFECTO)
+    # -------------------------------------------------------------------------
+    with sub_tab_comp:
+        st.markdown("#### Monitorización de Competencia")
+        df_comp = fetch_competitor_intelligence()
+        st.dataframe(df_comp, use_container_width=True, hide_index=True)
+        
+        # Desplegable cerrado por defecto para no saturar la vista
+        with st.expander("💡 Ver recomendaciones de estrategia competitiva", expanded=False):
+            st.markdown("##### Acciones Sugeridas por el Agente:")
             for _, row in df_comp.iterrows():
                 st.warning(f"**[{row['Competidor']}]** {row['Cambio Detectado']}\n\n👉 *Estrategia:* {row['Acción Sugerida']}")
-                
-        # Pestaña 3: ChatGPT Ads (Panel Dinámico Interactivo)
-        with sub_tab_gpt:
-            st.markdown("#### Simulador de Rendimiento: ChatGPT Ads (OpenAI)")
-            st.markdown("Ajusta los parámetros globales de inversión para proyectar el impacto en conversiones del Grokbot.")
             
-            col_ctrl1, col_ctrl2 = st.columns(2)
-            with col_ctrl1:
-                presupuesto_mensual = st.slider("Presupuesto Mensual ChatGPT Ads (€)", min_value=500, max_value=5000, value=1500, step=250)
-            with col_ctrl2:
-                multiplicador_intencion = st.selectbox(
-                    "Perfil de Intención Conversacional", 
-                    ["Equilibrado (Mixto)", "Enfoque Larga Duración / Europa", "Enfoque Local / Escapadas Cortas"]
-                )
+    # -------------------------------------------------------------------------
+    # TAB 3: CHATGPT ADS (SIMULADOR DE MÉTRICAS)
+    # -------------------------------------------------------------------------
+    with sub_tab_gpt:
+        st.markdown("#### Simulador de Rendimiento: ChatGPT Ads (OpenAI)")
+        st.markdown("Ajusta los parámetros globales de inversión para proyectar el impacto en conversiones del Grokbot.")
+        
+        col_ctrl1, col_ctrl2 = st.columns(2)
+        with col_ctrl1:
+            presupuesto_mensual = st.slider("Presupuesto Mensual ChatGPT Ads (€)", min_value=500, max_value=5000, value=1500, step=250)
+        with col_ctrl2:
+            multiplicador_intencion = st.selectbox(
+                "Perfil de Intención Conversacional", 
+                ["Equilibrado (Mixto)", "Enfoque Larga Duración / Europa", "Enfoque Local / Escapadas Cortas"]
+            )
+        
+        base_data = [
+            {
+                "Intención Conversacional": "Ruta camper familiar de larga duración por Europa", 
+                "Base Impresiones": 3400, "Base Clicks": 270, "CPC Medio (€)": 0.82, "Base Leads": 21, "ROAS Est.": 5.8
+            },
+            {
+                "Intención Conversacional": "Alquiler furgoneta pet-friendly con salida desde Valencia", 
+                "Base Impresiones": 2100, "Base Clicks": 195, "CPC Medio (€)": 0.59, "Base Leads": 16, "ROAS Est.": 7.1
+            },
+            {
+                "Intención Conversacional": "Compra de camper de ocasión ex-flota con historial", 
+                "Base Impresiones": 920, "Base Clicks": 105, "CPC Medio (€)": 1.35, "Base Leads": 7, "ROAS Est.": 4.5
+            }
+        ]
+        
+        factor = presupuesto_mensual / 1500.0
+        
+        interactive_rows = []
+        total_proyectado_leads = 0
+        
+        for item in base_data:
+            imp = int(item["Base Impresiones"] * factor)
+            clicks = int(item["Base Clicks"] * factor)
+            leads = int(item["Base Leads"] * factor)
+            total_proyectado_leads += leads
             
-            base_data = [
-                {
-                    "Intención Conversacional": "Ruta camper familiar de larga duración por Europa", 
-                    "Base Impresiones": 3400, "Base Clicks": 270, "CPC Medio (€)": 0.82, "Base Leads": 21, "ROAS Est.": 5.8
-                },
-                {
-                    "Intención Conversacional": "Alquiler furgoneta pet-friendly con salida desde Valencia", 
-                    "Base Impresiones": 2100, "Base Clicks": 195, "CPC Medio (€)": 0.59, "Base Leads": 16, "ROAS Est.": 7.1
-                },
-                {
-                    "Intención Conversacional": "Compra de camper de ocasión ex-flota con historial", 
-                    "Base Impresiones": 920, "Base Clicks": 105, "CPC Medio (€)": 1.35, "Base Leads": 7, "ROAS Est.": 4.5
-                }
-            ]
+            interactive_rows.append({
+                "Intención": item["Intención Conversacional"],
+                "Impresiones Proyectadas": imp,
+                "Clicks Estimados": clicks,
+                "CPC (€)": item["CPC Medio (€)"],
+                "Leads Grokbot Est.": leads,
+                "ROAS Esperado": item["ROAS Est."]
+            })
             
-            factor = presupuesto_mensual / 1500.0
+        df_gpt_interactive = pd.DataFrame(interactive_rows)
+        
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("Inversión Simulada", f"{presupuesto_mensual} €")
+        with m2:
+            st.metric("Leads Grokbot Proyectados", f"{total_proyectado_leads} leads")
+        with m3:
+            st.metric("ROAS Promedio Estimado", "5.8x")
             
-            interactive_rows = []
-            total_proyectado_leads = 0
-            
-            for item in base_data:
-                imp = int(item["Base Impresiones"] * factor)
-                clicks = int(item["Base Clicks"] * factor)
-                leads = int(item["Base Leads"] * factor)
-                total_proyectado_leads += leads
-                
-                interactive_rows.append({
-                    "Intención": item["Intención Conversacional"],
-                    "Impresiones Proyectadas": imp,
-                    "Clicks Estimados": clicks,
-                    "CPC (€)": item["CPC Medio (€)"],
-                    "Leads Grokbot Est.": leads,
-                    "ROAS Esperado": item["ROAS Est."]
-                })
-                
-            df_gpt_interactive = pd.DataFrame(interactive_rows)
-            
-            m1, m2, m3 = st.columns(3)
-            with m1:
-                st.metric("Inversión Simulada", f"{presupuesto_mensual} €")
-            with m2:
-                st.metric("Leads Grokbot Proyectados", f"{total_proyectado_leads} leads")
-            with m3:
-                st.metric("ROAS Promedio Estimado", "5.8x")
-                
-            st.dataframe(df_gpt_interactive, use_container_width=True, hide_index=True)
+        st.dataframe(df_gpt_interactive, use_container_width=True, hide_index=True)
 
+# =============================================================================
+# ENRUTADOR DEL PANEL LATERAL (SIDEBAR NAVIGATION)
+# =============================================================================
 
-# --- CONTROL LATERAL Y EJECUCIÓN AUTOMÁTICA ---
 st.sidebar.markdown("---")
-st.sidebar.subheader("🎯 Modulos de Inteligencia")
-mostrar_suite = st.sidebar.checkbox("Activar Executive Intelligence Suite", value=True)
+st.sidebar.subheader("📌 Navegación del Dashboard")
 
-if mostrar_suite:
+opcion_menu = st.sidebar.radio(
+    "Seleccionar Vista:",
+    ["Dashboard Principal", "🚀 Executive Intelligence Suite"],
+    key="executive_suite_nav_radio"
+)
+
+# Si se selecciona la Suite, renderizamos el panel y detenemos la ejecución
+# para evitar que cargue el resto de la página principal debajo.
+if opcion_menu == "🚀 Executive Intelligence Suite":
     render_advanced_intelligence_suite()
+    st.stop()
